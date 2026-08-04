@@ -1,0 +1,46 @@
+{
+  "pipeline_version": "2026-08-04-revised-v1",
+  "tasks": [
+    "bci_errp",
+    "seizure_detection",
+    "attention_state"
+  ],
+  "methods": [
+    "raw",
+    "bandpass",
+    "asr",
+    "ic_unet"
+  ],
+  "classifiers": [
+    "logistic_regression",
+    "svm",
+    "random_forest",
+    "lightgbm",
+    "mlp",
+    "eegnet"
+  ],
+  "repeats": 10,
+  "base_seed": 0,
+  "output_dir": "output",
+  "cache_dir": ".cache",
+  "stft": {
+    "window": "hann",
+    "nperseg": 256,
+    "overlap_fraction": 0.5,
+    "boundary": "zeros",
+    "padded": true,
+    "power": true
+  },
+  "eegnet": {
+    "epochs": 150,
+    "batch_size": 32,
+    "patience": 10,
+    "monitor": "val_loss",
+    "verbose": 0
+  },
+  "ic_unet": {
+    "checkpoint": "BEST_checkpoint.pth.tar",
+    "recording_chunk_seconds": 30,
+    "recording_overlap_seconds": 2
+  }
+}

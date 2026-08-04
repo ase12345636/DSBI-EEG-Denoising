@@ -1,0 +1,46 @@
+--index-url https://pypi.org/simple
+--extra-index-url https://download.pytorch.org/whl/cu126
+
+# Core scientific stack
+numpy==1.26.4
+pandas==2.2.3
+scipy==1.13.1
+scikit-learn==1.5.2
+imbalanced-learn==0.12.4
+pyriemann==0.7
+
+# Models and visualization
+lightgbm==4.5.0
+matplotlib==3.9.2
+seaborn==0.13.2
+
+# EEG processing
+mne==1.8.0
+asrpy==0.0.7
+
+# GPU frameworks
+torch==2.7.1+cu126
+tensorflow[and-cuda]==2.20.0
+
+# Shared CUDA 12.6 / cuDNN 9.5 runtime
+# Explicit pins prevent pip from mixing newer CUDA 12.x or cuDNN releases.
+nvidia-cublas-cu12==12.6.4.1; platform_system == "Linux" and platform_machine == "x86_64"
+nvidia-cuda-cupti-cu12==12.6.80; platform_system == "Linux" and platform_machine == "x86_64"
+nvidia-cuda-nvcc-cu12==12.6.85; platform_system == "Linux" and platform_machine == "x86_64"
+nvidia-cuda-nvrtc-cu12==12.6.77; platform_system == "Linux" and platform_machine == "x86_64"
+nvidia-cuda-runtime-cu12==12.6.77; platform_system == "Linux" and platform_machine == "x86_64"
+nvidia-cudnn-cu12==9.5.1.17; platform_system == "Linux" and platform_machine == "x86_64"
+nvidia-cufft-cu12==11.3.0.4; platform_system == "Linux" and platform_machine == "x86_64"
+nvidia-cufile-cu12==1.11.1.6; platform_system == "Linux" and platform_machine == "x86_64"
+nvidia-curand-cu12==10.3.7.77; platform_system == "Linux" and platform_machine == "x86_64"
+nvidia-cusolver-cu12==11.7.1.2; platform_system == "Linux" and platform_machine == "x86_64"
+nvidia-cusparse-cu12==12.5.4.2; platform_system == "Linux" and platform_machine == "x86_64"
+nvidia-cusparselt-cu12==0.6.3; platform_system == "Linux" and platform_machine == "x86_64"
+nvidia-nccl-cu12==2.26.2; platform_system == "Linux" and platform_machine == "x86_64"
+nvidia-nvjitlink-cu12==12.6.85; platform_system == "Linux" and platform_machine == "x86_64"
+nvidia-nvtx-cu12==12.6.77; platform_system == "Linux" and platform_machine == "x86_64"
+triton==3.3.1; platform_system == "Linux" and platform_machine == "x86_64"
+
+# Dataset download and progress reporting
+kaggle==1.6.17
+tqdm==4.67.1

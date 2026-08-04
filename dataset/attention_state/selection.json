@@ -1,0 +1,30 @@
+{
+  "files": [
+    "eeg_record3.mat",
+    "eeg_record4.mat",
+    "eeg_record5.mat",
+    "eeg_record6.mat",
+    "eeg_record7.mat",
+    "eeg_record10.mat",
+    "eeg_record11.mat",
+    "eeg_record12.mat",
+    "eeg_record13.mat",
+    "eeg_record14.mat",
+    "eeg_record17.mat",
+    "eeg_record18.mat",
+    "eeg_record19.mat",
+    "eeg_record20.mat",
+    "eeg_record21.mat",
+    "eeg_record24.mat",
+    "eeg_record25.mat",
+    "eeg_record26.mat",
+    "eeg_record27.mat",
+    "eeg_record31.mat",
+    "eeg_record32.mat",
+    "eeg_record33.mat",
+    "eeg_record34.mat"
+  ],
+  "rejected": "eeg_record28.mat",
+  "rejection_reason": "shorter_than_report_30_minutes",
+  "note": "Auto-reconstructed because the supplied report/code omitted the exact rejected filename."
+}

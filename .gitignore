@@ -1,0 +1,7 @@
+.cache/
+output/
+dataset/*/data/
+*.part
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
