@@ -14,6 +14,8 @@ from utils.progress import progress
 
 FS = 256.0
 SIGNAL_UNIT = "volt"
+STFT_FEATURE_UNIT = "microvolt^2"
+STFT_POWER_UNIT_SCALE = np.float32(1e12)  # V^2 -> microvolt^2
 CACHE_VERSION = "seizure-v4-aieeg-source"
 NON_SEIZURE_CAP_PER_PATIENT = 999
 EXCLUDED_PATIENTS = {"chb15"}
@@ -53,8 +55,7 @@ class SeizureDetectionTask:
         ]
         if not edf_files:
             raise FileNotFoundError(
-                "No CHB-MIT seizure EDF files with .edf.seizures sidecars "
-                f"were found below {data_dir}"
+                f"No CHB-MIT EDF files found below {data_dir}"
             )
 
         import mne
@@ -171,7 +172,8 @@ class SeizureDetectionTask:
                 "source": "AIEEG/chbmit_mat.py + rm_row_mat.py",
                 "segment_seconds": 1,
                 "signal_unit": SIGNAL_UNIT,
-                "recording_selection": "EDF files with .edf.seizures sidecars",
+                "classical_stft_feature_unit": STFT_FEATURE_UNIT,
+                "recording_selection": "downloaded EDF files; labels from CHB-MIT summary files",
                 "excluded_patients": sorted(EXCLUDED_PATIENTS),
                 "excluded_files": sorted(EXCLUDED_FILES),
                 "non_seizure_cap_per_patient": NON_SEIZURE_CAP_PER_PATIENT,
@@ -202,6 +204,20 @@ class SeizureDetectionTask:
         return stft_mean_power(train, FS), stft_mean_power(test, FS)
 
     @staticmethod
+    def transform_feature_matrix(features: np.ndarray) -> np.ndarray:
+        """Convert shared STFT power from V^2 to microvolt^2.
+
+        MNE returns the time-domain EDF signal in volts.  The cached STFT
+        power therefore remains in V^2.  This positive global unit conversion
+        is applied once in the common feature path, before balancing and before
+        any classifier-specific standardization, so LR, SVM, RF, LightGBM, and
+        MLP all receive the same Seizure feature representation.  EEGNet uses
+        the time-domain signal and does not pass through this method.
+        """
+        values = np.asarray(features, dtype=np.float32)
+        return values * STFT_POWER_UNIT_SCALE
+
+    @staticmethod
     def balance_features(x_train, y_train, seed: int):
         del seed
         return x_train, y_train
@@ -216,9 +232,7 @@ class SeizureDetectionTask:
     @staticmethod
     def _is_source_recording(path: Path) -> bool:
         patient = path.parent.name
-        if patient in EXCLUDED_PATIENTS or path.name in EXCLUDED_FILES:
-            return False
-        return path.with_name(path.name + ".seizures").exists()
+        return patient not in EXCLUDED_PATIENTS and path.name not in EXCLUDED_FILES
 
     @staticmethod
     def _trim_source_channels(data: np.ndarray) -> np.ndarray | None:

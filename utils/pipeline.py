@@ -8,7 +8,6 @@ import json
 import os
 import platform
 import random
-import shutil
 import sys
 from datetime import datetime, timezone
 from importlib import metadata as importlib_metadata
@@ -63,7 +62,7 @@ _RESULT_COLUMNS = (
     "auc",
 )
 
-CODE_REVISION = "2026-08-04-aieeg-seizure-v2"
+CODE_REVISION = "2026-08-05-seizure-stft-microvolt2-v3"
 
 
 def _set_seed(seed: int) -> None:
@@ -339,6 +338,21 @@ class ReproductionPipeline:
                                     y_train,
                                     y_test,
                                 )
+
+                            # Apply a task-defined unit/representation transform
+                            # once to the shared feature pair before balancing or
+                            # classifier-specific standardization.  For Seizure
+                            # Detection this converts STFT power from V^2 to
+                            # microvolt^2 for every classical classifier.
+                            feature_transform = getattr(
+                                task, "transform_feature_matrix", None
+                            )
+                            if feature_transform is not None:
+                                feature_pair = (
+                                    feature_transform(feature_pair[0]),
+                                    feature_transform(feature_pair[1]),
+                                )
+
                             balanced_x, balanced_y = task.balance_features(
                                 feature_pair[0], y_train, seed
                             )
@@ -463,37 +477,16 @@ class ReproductionPipeline:
         return 0
 
     def _prepare_output_directory(self, output_dir: Path) -> None:
-        # Remove the obsolete hidden signature file if it was created by an
-        # earlier package version.  Compatibility is tracked in run_manifest.json.
-        (output_dir / ".pipeline_signature.json").unlink(missing_ok=True)
+        """Keep existing run-level CSV files so interrupted runs can resume.
 
-        has_run_files = any(
-            (output_dir / name).exists()
-            for name in ("all_runs.csv", "all_runs.partial.csv")
-        )
-        manifest_path = output_dir / "run_manifest.json"
-        previous_revision = None
-        if manifest_path.exists():
-            try:
-                previous_revision = json.loads(
-                    manifest_path.read_text(encoding="utf-8")
-                ).get("code_revision")
-            except Exception:
-                previous_revision = None
-
-        if output_dir.exists() and has_run_files and previous_revision != CODE_REVISION:
-            timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-            backup = output_dir.with_name(f"{output_dir.name}.before-{CODE_REVISION}-{timestamp}")
-            counter = 1
-            while backup.exists():
-                backup = output_dir.with_name(
-                    f"{output_dir.name}.before-{CODE_REVISION}-{timestamp}-{counter}"
-                )
-                counter += 1
-            shutil.move(str(output_dir), str(backup))
-            print(f"[resume] old output moved to {backup}")
-
+        Completion is determined only from the run keys in
+        all_runs.partial.csv or all_runs.csv.  Never rename, delete, or reset
+        the output directory automatically.
+        """
         output_dir.mkdir(parents=True, exist_ok=True)
+        # This file belonged to an older implementation and is no longer used.
+        # Removing it must not affect existing CSV checkpoints.
+        (output_dir / ".pipeline_signature.json").unlink(missing_ok=True)
 
     def _stft_cache_path(self, task, method_name: str) -> Path:
         stft_digest = hashlib.sha256(
