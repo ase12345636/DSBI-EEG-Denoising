@@ -174,10 +174,30 @@ def _write_figures(results: pd.DataFrame, task_dir: Path, task_name: str) -> Non
         axis.set_title(f"{metric_label} of Different Denoising Methods - {task_title}")
         axis.set_xlabel("Classifier")
         axis.set_ylabel(metric_label)
-        axis.set_ylim(0, 1)
-        axis.legend(title="Denoising Methods")
-        figure.tight_layout()
-        figure.savefig(path, dpi=300)
+
+        # Adapt the bar-chart Y axis to the displayed values:
+        # minimum value - 0.1 and maximum value + 0.1, constrained to [0, 1].
+        metric_values = classifier_means[metric].dropna()
+        if metric_values.empty:
+            y_lower, y_upper = 0.0, 1.0
+        else:
+            y_lower = max(0.0, float(metric_values.min()) - 0.1)
+            y_upper = min(1.0, float(metric_values.max()) + 0.1)
+
+        axis.set_ylim(y_lower, y_upper)
+
+        # Move the bar-chart legend below the plot and arrange it in one row.
+        handles, labels = axis.get_legend_handles_labels()
+        axis.legend(
+            handles,
+            labels,
+            loc="upper center",
+            bbox_to_anchor=(0.5, -0.12),
+            ncol=max(len(method_order), 1),
+            frameon=True,
+        )
+        figure.subplots_adjust(bottom=0.24)
+        figure.savefig(path, dpi=300, bbox_inches="tight")
         plt.close(figure)
 
     figure, axes = plt.subplots(1, 2, figsize=(15, 6), sharey=False)
