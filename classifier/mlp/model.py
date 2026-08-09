@@ -1,4 +1,4 @@
-"""Shared MLP settings recovered from the BCI classifier notebook."""
+"""Shared multilayer perceptron classifier."""
 
 from sklearn.neural_network import MLPClassifier
 

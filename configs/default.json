@@ -1,5 +1,4 @@
 {
-  "pipeline_version": "2026-08-04-revised-v1",
   "tasks": [
     "bci_errp",
     "seizure_detection",
@@ -9,7 +8,8 @@
     "raw",
     "bandpass",
     "asr",
-    "ic_unet"
+    "ic_unet",
+    "ica"
   ],
   "classifiers": [
     "logistic_regression",
@@ -20,7 +20,7 @@
     "eegnet"
   ],
   "repeats": 10,
-  "base_seed": 0,
+  "legacy_mode": false,
   "output_dir": "output",
   "cache_dir": ".cache",
   "stft": {
@@ -42,5 +42,20 @@
     "checkpoint": "BEST_checkpoint.pth.tar",
     "recording_chunk_seconds": 30,
     "recording_overlap_seconds": 2
+  },
+  "ica": {
+    "decomposition": "extended_infomax",
+    "component_labeler": "iclabel",
+    "random_state": 97,
+    "fit_sample_budget_seconds": 300.0,
+    "keep_labels": [
+      "brain",
+      "other"
+    ],
+    "fit_reference": "common_average",
+    "fit_band_hz": [
+      1.0,
+      100.0
+    ]
   }
 }

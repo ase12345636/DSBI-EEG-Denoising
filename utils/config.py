@@ -16,12 +16,12 @@ class ProjectConfig:
     methods: tuple[str, ...]
     classifiers: tuple[str, ...]
     repeats: int
-    base_seed: int
     output_dir: Path
     cache_dir: Path
     stft: dict[str, Any]
     eegnet: dict[str, Any]
     ic_unet: dict[str, Any]
+    ica: dict[str, Any]
 
 
 def load_config(path: Path, root: Path) -> ProjectConfig:
@@ -34,10 +34,10 @@ def load_config(path: Path, root: Path) -> ProjectConfig:
         methods=tuple(raw["methods"]),
         classifiers=tuple(raw["classifiers"]),
         repeats=int(raw.get("repeats", 10)),
-        base_seed=int(raw.get("base_seed", 0)),
         output_dir=root / raw.get("output_dir", "output"),
         cache_dir=root / raw.get("cache_dir", ".cache"),
         stft=dict(raw.get("stft", {})),
         eegnet=dict(raw.get("eegnet", {})),
         ic_unet=dict(raw.get("ic_unet", {})),
+        ica=dict(raw.get("ica", {})),
     )

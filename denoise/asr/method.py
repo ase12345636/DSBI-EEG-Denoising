@@ -1,4 +1,4 @@
-"""ASR cutoff=5, extracted from total.ipynb and AIEEG/chbmit_mat.py."""
+"""Artifact Subspace Reconstruction with cutoff 5."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ class ASRDenoiser:
         task_name: str | None = None,
         **_: object,
     ) -> np.ndarray:
-        # The BCI notebook first applies a 1--40 Hz filter to each epoch.
+        # BCI epochs are filtered to 1--40 Hz before ASR.
         if task_name == "bci_errp":
             from denoise.bandpass.method import butter_bandpass_filter
 

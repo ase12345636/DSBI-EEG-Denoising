@@ -1,4 +1,4 @@
-"""Shared linear probability SVM recovered from the BCI source notebook."""
+"""Shared linear probability SVM classifier."""
 
 from sklearn.svm import SVC
 

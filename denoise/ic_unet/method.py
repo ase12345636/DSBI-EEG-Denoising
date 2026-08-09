@@ -1,4 +1,4 @@
-"""IC-U-Net inference using the recovered best-validation checkpoint."""
+"""IC-U-Net denoising inference."""
 
 from __future__ import annotations
 
@@ -54,7 +54,7 @@ class ICUNetDenoiser:
 
     @staticmethod
     def _fir_filter(signal: np.ndarray, highcut: float) -> np.ndarray:
-        # Recovered AIEEG settings: fs=256, 1000 taps, causal lfilter.
+        # IC-U-Net preprocessing uses fs=256, 1000 taps, and causal filtering.
         coefficients = firwin(
             1000,
             [1.0, highcut],
@@ -127,10 +127,10 @@ class ICUNetDenoiser:
         if task_name == "seizure_detection":
             if float(sampling_rate) != self.target_rate:
                 raise ValueError(
-                    "The recovered CHB-MIT IC-U-Net pipeline expects 256 Hz input"
+                    "The CHB-MIT IC-U-Net pipeline expects 256 Hz input"
                 )
 
-            # AIEEG/mat.py pads 23 channels to 30, repeats each 1-second
+            # Pad 23 channels to 30 and repeat each 1-second
             # segment eight times, applies a 1--50 Hz 1000-tap causal FIR,
             # then normalizes and decodes each 1024-sample block separately.
             data = np.concatenate([data] * 8, axis=-1)

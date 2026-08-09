@@ -19,12 +19,13 @@ TABLE_NUMBERS = {
     "seizure_detection": (7, 8),
     "attention_state": (9, 10),
 }
-METHOD_ORDER = ("raw", "bandpass", "asr", "ic_unet")
+METHOD_ORDER = ("raw", "bandpass", "ica", "asr", "ic_unet")
 CLASSIFIER_ORDER = (
     "logistic_regression", "svm", "random_forest", "lightgbm", "mlp", "eegnet"
 )
 DISPLAY_METHOD = {
-    "raw": "Raw", "bandpass": "Filter (1–50 Hz)", "asr": "ASR", "ic_unet": "IC-U-Net"
+    "raw": "Raw", "bandpass": "Filter (1–50 Hz)", "asr": "ASR",
+    "ic_unet": "IC-U-Net", "ica": "ICA"
 }
 DISPLAY_CLASSIFIER = {
     "logistic_regression": "LR", "svm": "SVM", "random_forest": "RF",
@@ -33,13 +34,14 @@ DISPLAY_CLASSIFIER = {
 METHOD_COLORS = {
     "Raw": "#ff9999", "Filter (1–50 Hz)": "#8fc5f4",
     "ASR": "#91e693", "IC-U-Net": "#ffd29b",
+    "ICA": "#c7a6e8",
 }
 TASK_DISPLAY = {
     "bci_errp": "BCI", "seizure_detection": "Seizure", "attention_state": "Attention",
 }
 
 
-def write_outputs(results: pd.DataFrame, output_dir: Path, metadata: dict) -> None:
+def write_outputs(results: pd.DataFrame, output_dir: Path, manifest: dict) -> None:
     if results.empty:
         raise ValueError("No experiment results were produced")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -64,7 +66,7 @@ def write_outputs(results: pd.DataFrame, output_dir: Path, metadata: dict) -> No
         task_summary = summary[summary["task"] == task_name]
         _write_tables(task_summary, task_dir, task_name)
         _write_figures(task_runs, task_dir, task_name)
-    (output_dir / "run_manifest.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    (output_dir / "run_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
 
 def checkpoint_results(rows: list[dict], output_dir: Path) -> None:

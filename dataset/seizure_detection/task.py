@@ -1,4 +1,4 @@
-"""CHB-MIT seizure detection aligned with the recovered AIEEG source code."""
+"""CHB-MIT seizure detection task."""
 
 from __future__ import annotations
 
@@ -14,9 +14,8 @@ from utils.progress import progress
 
 FS = 256.0
 SIGNAL_UNIT = "volt"
-STFT_FEATURE_UNIT = "microvolt^2"
 STFT_POWER_UNIT_SCALE = np.float32(1e12)  # V^2 -> microvolt^2
-CACHE_VERSION = "seizure-v4-aieeg-source"
+CACHE_VERSION = "seizure"
 NON_SEIZURE_CAP_PER_PATIENT = 999
 EXCLUDED_PATIENTS = {"chb15"}
 EXCLUDED_FILES = {"chb12_27.edf", "chb12_28.edf", "chb12_29.edf"}
@@ -36,7 +35,11 @@ class SeizureDetectionTask:
         checkpoint_path: Path | None,
         quick: bool,
     ) -> SignalDataset:
-        cache = cache_dir / self.name / f"{CACHE_VERSION}-{denoiser.name}.npz"
+        # Quick ICA uses one recording and must use a separate cache.
+        cache_method = denoiser.name
+        if denoiser.name == "ica":
+            cache_method = "ica-v4-quick" if quick else "ica-v4"
+        cache = cache_dir / self.name / f"{CACHE_VERSION}-{cache_method}.npz"
         if cache.exists():
             return self._load(cache, quick)
 
@@ -45,18 +48,23 @@ class SeizureDetectionTask:
         labels: list[int] = []
         groups: list[str] = []
         non_seizure_per_patient: dict[str, int] = {}
-        used_files: list[str] = []
-        skipped_files: list[str] = []
 
         edf_files = [
             path
             for path in sorted(data_dir.rglob("*.edf"))
-            if self._is_source_recording(path)
+            if self._is_usable_recording(path)
         ]
         if not edf_files:
             raise FileNotFoundError(
                 f"No CHB-MIT EDF files found below {data_dir}"
             )
+        if quick:
+            # Select one recording that actually contains a seizure interval so
+            # the smoke test retains both classes after one-second segmentation.
+            seizure_files = [
+                path for path in edf_files if intervals.get(path.name)
+            ]
+            edf_files = (seizure_files or edf_files)[:1]
 
         import mne
 
@@ -70,27 +78,34 @@ class SeizureDetectionTask:
             patient = path.parent.name
             raw = mne.io.read_raw_edf(path, preload=True, verbose=False)
             try:
-                # The recovered AIEEG code uses MNE's native EDF values directly
-                # and does not multiply the recording by 1e6.
+                # MNE returns EDF EEG values in volts.
                 recording = raw.get_data().astype(np.float64, copy=False)
+                channel_names = tuple(raw.ch_names)
             finally:
                 raw.close()
 
-            if denoiser.name == "asr":
-                # AIEEG/chbmit_mat.py calibrates and processes ASR on the full
-                # EDF before channel trimming and 1-second segmentation.
+            if denoiser.name == "ica":
+                from dataset.seizure_detection.ica_adapter import clean_bipolar_recording
+
+                recording = clean_bipolar_recording(
+                    denoiser,
+                    recording,
+                    FS,
+                    channel_names=channel_names,
+                    task_name=self.name,
+                    recording_id=str(path.relative_to(data_dir)),
+                )
+            elif denoiser.name == "asr":
+                # ASR is applied to the full EDF before channel trimming and segmentation.
                 recording = denoiser.transform_recording(recording, FS)
             elif denoiser.name == "bandpass":
-                # The recovered helper applies the shared 1--50 Hz filter to
-                # the full EDF before segmentation.
+                # Band-pass filtering is applied to the full EDF before segmentation.
                 recording = denoiser.transform(recording[np.newaxis], FS)[0]
 
-            recording = self._trim_source_channels(recording)
+            recording = self._trim_channels(recording)
             if recording is None:
-                skipped_files.append(str(path.relative_to(data_dir)))
                 continue
 
-            used_files.append(str(path.relative_to(data_dir)))
             seizure_ranges = intervals.get(path.name, [])
             duration_seconds = recording.shape[1] // int(FS)
 
@@ -168,22 +183,11 @@ class SeizureDetectionTask:
             class_names=("non_seizure", "seizure"),
             primary_metric="accuracy",
             groups=groups_array,
-            metadata={
-                "source": "AIEEG/chbmit_mat.py + rm_row_mat.py",
-                "segment_seconds": 1,
-                "signal_unit": SIGNAL_UNIT,
-                "classical_stft_feature_unit": STFT_FEATURE_UNIT,
-                "recording_selection": "downloaded EDF files; labels from CHB-MIT summary files",
-                "excluded_patients": sorted(EXCLUDED_PATIENTS),
-                "excluded_files": sorted(EXCLUDED_FILES),
-                "non_seizure_cap_per_patient": NON_SEIZURE_CAP_PER_PATIENT,
-                "used_files": used_files,
-                "skipped_files": skipped_files,
-                "split": "stratified sample-level 80/20",
-            },
         )
         dataset.validate()
         self._save(cache, dataset)
+        if denoiser.name == "ica":
+            denoiser.save_reports(cache.with_suffix(".components.json"))
         return self._quick(dataset) if quick else dataset
 
     @staticmethod
@@ -230,13 +234,13 @@ class SeizureDetectionTask:
         return scaler.fit_transform(x_train), scaler.transform(x_test)
 
     @staticmethod
-    def _is_source_recording(path: Path) -> bool:
+    def _is_usable_recording(path: Path) -> bool:
         patient = path.parent.name
         return patient not in EXCLUDED_PATIENTS and path.name not in EXCLUDED_FILES
 
     @staticmethod
-    def _trim_source_channels(data: np.ndarray) -> np.ndarray | None:
-        """Apply the positional channel rules from AIEEG/rm_row_mat.py."""
+    def _trim_channels(data: np.ndarray) -> np.ndarray | None:
+        """Normalize recordings to the required 23-channel layout."""
         output = np.asarray(data, dtype=np.float64)
         channel_count = output.shape[0]
 
@@ -294,11 +298,6 @@ class SeizureDetectionTask:
                 ("non_seizure", "seizure"),
                 "accuracy",
                 groups=saved["groups"],
-                metadata={
-                    "source": "cached AIEEG-aligned CHB-MIT preparation",
-                    "segment_seconds": 1,
-                    "signal_unit": SIGNAL_UNIT,
-                },
             )
         return self._quick(data) if quick else data
 
@@ -314,7 +313,6 @@ class SeizureDetectionTask:
             data.class_names,
             data.primary_metric,
             groups=data.groups[indices],
-            metadata=data.metadata,
         )
 
 

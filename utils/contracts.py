@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -17,7 +16,6 @@ class SignalDataset:
     primary_metric: str
     fixed_train: np.ndarray | None = None
     groups: np.ndarray | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
 
     def validate(self) -> None:
         if self.signals.ndim != 3:

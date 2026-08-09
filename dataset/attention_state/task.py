@@ -1,4 +1,4 @@
-"""Mental-attention preprocessing reconstructed from report section 4.3.5."""
+"""Mental-attention preprocessing and evaluation task."""
 
 from __future__ import annotations
 
@@ -14,11 +14,15 @@ from utils.progress import progress
 
 
 FS = 128.0
+ATTENTION_CHANNELS = (
+    "AF3", "F7", "F3", "FC5", "T7", "P7", "O1",
+    "O2", "P8", "T8", "FC6", "F4", "F8", "AF4",
+)
 WINDOW = 640
 STATE_SAMPLES = 10 * 60 * 128
 EXPECTED_RECORDINGS = 34
 SUBJECT_RECORDING_COUNTS = (7, 7, 7, 7, 6)
-CACHE_VERSION = "attention-v3-recording-denoise"
+CACHE_VERSION = "attention"
 
 
 class AttentionStateTask:
@@ -35,11 +39,17 @@ class AttentionStateTask:
         checkpoint_path: Path | None,
         quick: bool,
     ) -> SignalDataset:
-        cache = cache_dir / self.name / f"{CACHE_VERSION}-{denoiser.name}.npz"
+        # Quick ICA uses one recording and must use a separate cache.
+        cache_method = denoiser.name
+        if denoiser.name == "ica":
+            cache_method = "ica-v4-quick" if quick else "ica-v4"
+        cache = cache_dir / self.name / f"{CACHE_VERSION}-{cache_method}.npz"
         if cache.exists():
             return self._load(cache, quick)
 
         files = self._selected_files(data_dir)
+        if quick:
+            files = files[:1]
         windows: list[np.ndarray] = []
         labels: list[int] = []
         groups: list[str] = []
@@ -54,14 +64,25 @@ class AttentionStateTask:
             signal = self._load_eeg(path)
             if signal.shape[1] < 3 * STATE_SAMPLES:
                 raise ValueError(
-                    f"{path.name} is shorter than the report's first 30 minutes: "
+                    f"{path.name} is shorter than the required first 30 minutes: "
                     f"{signal.shape[1] / FS / 60:.2f} minutes"
                 )
             signal = signal[:, : 3 * STATE_SAMPLES]
 
-            # The report explicitly standardizes each recording before 5-second
-            # segmentation.  Statistics are channel-wise and use only that
-            # recording, avoiding cross-recording leakage.
+            # ICA must operate on continuous, positioned scalp data.
+            # It is therefore applied before per-channel z-score normalization.
+            if denoiser.name == "ica":
+                signal = denoiser.transform_recording(
+                    signal,
+                    FS,
+                    channel_names=ATTENTION_CHANNELS,
+                    unit_scale_to_volts=1e-6,
+                    task_name=self.name,
+                    recording_id=path.stem,
+                ).astype(np.float64)
+
+            # Standardize each recording before 5-second segmentation. Statistics
+            # are channel-wise and use only that recording, avoiding leakage.
             mean = np.mean(signal, axis=1, keepdims=True)
             standard_deviation = np.std(signal, axis=1, keepdims=True)
             signal = (signal - mean) / np.where(
@@ -70,7 +91,7 @@ class AttentionStateTask:
 
             # Long-recording processing is preferable for ASR calibration and
             # avoids independent filter edge effects at every 5-second window.
-            if denoiser.name == "raw":
+            if denoiser.name in {"raw", "ica"}:
                 processed = np.asarray(signal, dtype=np.float32)
             elif denoiser.name == "asr":
                 processed = denoiser.transform_recording(signal, FS).astype(np.float32)
@@ -113,18 +134,11 @@ class AttentionStateTask:
             class_names=("focused", "unfocused", "drowsy"),
             primary_metric="accuracy",
             groups=np.asarray(groups),
-            metadata={
-                "source": "report reconstruction",
-                "window_seconds": 5,
-                "recording_minutes": 30,
-                "normalization": "per-recording per-channel z-score",
-                "denoising_scope": "complete recording before windowing",
-                "split": "stratified sample-level 80/20",
-                "files": [path.name for path in files],
-            },
         )
         dataset.validate()
         self._save(cache, dataset)
+        if denoiser.name == "ica":
+            denoiser.save_reports(cache.with_suffix(".components.json"))
         return self._quick(dataset) if quick else dataset
 
     @staticmethod
@@ -274,7 +288,7 @@ class AttentionStateTask:
 
         if len(candidates) != 24:
             raise ValueError(
-                "Could not reconstruct the report's "
+                "Could not reconstruct the required "
                 "post-habituation set: got "
                 f"{len(candidates)} files"
             )
@@ -306,10 +320,6 @@ class AttentionStateTask:
 
         if len(short_recordings) == 1:
             rejected = short_recordings[0][0]
-            rejection_reason = (
-                "shorter_than_report_30_minutes"
-            )
-
         elif len(short_recordings) > 1:
             details = ", ".join(
                 f"{path.name}="
@@ -327,9 +337,6 @@ class AttentionStateTask:
                 quality,
                 key=lambda item: item[2],
             )[0]
-            rejection_reason = (
-                "strongest_robust_amplitude_outlier"
-            )
 
         selected = [
             path
@@ -344,13 +351,6 @@ class AttentionStateTask:
                         path.name
                         for path in selected
                     ],
-                    "rejected": rejected.name,
-                    "rejection_reason": rejection_reason,
-                    "note": (
-                        "Auto-reconstructed because the "
-                        "supplied report/code omitted the "
-                        "exact rejected filename."
-                    ),
                 },
                 indent=2,
             ),
@@ -359,10 +359,6 @@ class AttentionStateTask:
 
         return selected
 
-    def _outlier_score(self, path: Path) -> float:
-        return self._outlier_score_from_eeg(
-            self._load_eeg(path)
-        )
 
     @staticmethod
     def _outlier_score_from_eeg(
@@ -557,7 +553,6 @@ class AttentionStateTask:
             data.class_names,
             data.primary_metric,
             groups=data.groups[indices],
-            metadata=data.metadata,
         )
 
 

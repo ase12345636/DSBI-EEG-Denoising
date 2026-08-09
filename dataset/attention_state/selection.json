@@ -23,8 +23,5 @@
     "eeg_record32.mat",
     "eeg_record33.mat",
     "eeg_record34.mat"
-  ],
-  "rejected": "eeg_record28.mat",
-  "rejection_reason": "shorter_than_report_30_minutes",
-  "note": "Auto-reconstructed because the supplied report/code omitted the exact rejected filename."
+  ]
 }

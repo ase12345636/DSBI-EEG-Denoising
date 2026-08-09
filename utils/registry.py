@@ -17,6 +17,7 @@ DENOISE_MODULES = {
     "bandpass": "denoise.bandpass.method",
     "asr": "denoise.asr.method",
     "ic_unet": "denoise.ic_unet.method",
+    "ica": "denoise.ica.method",
 }
 
 CLASSIFIER_MODULES = {

@@ -1,5 +1,5 @@
 .cache/
-output/
+output*/
 dataset/*/data/
 *.part
 __pycache__/

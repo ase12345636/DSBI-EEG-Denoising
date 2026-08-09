@@ -1,3 +1,12 @@
+# EEG experiment environment
+# Target: Linux x86_64, Python 3.10, NVIDIA GPU
+# Install with:
+#   python -m pip install -r requirements.txt
+#
+# PyTorch and TensorFlow intentionally share one pinned CUDA 12.6 / cuDNN 9.5 stack.
+# Use this file in a NEW virtual/Conda environment; requirements.txt cannot remove
+# unrelated or conflicting packages left in an existing environment.
+
 --index-url https://pypi.org/simple
 --extra-index-url https://download.pytorch.org/whl/cu126
 
@@ -16,6 +25,7 @@ seaborn==0.13.2
 
 # EEG processing
 mne==1.8.0
+mne-icalabel==0.7.0
 asrpy==0.0.7
 
 # GPU frameworks

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One-command entry point for the revised EEG reproduction package."""
+"""Command-line entry point for the EEG benchmark."""
 
 from __future__ import annotations
 
@@ -19,8 +19,8 @@ ROOT = Path(__file__).resolve().parent
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Download the public EEG datasets and run the revised report "
-            "experiments. Running without arguments executes all 720 model runs."
+            "Download the EEG datasets and run the benchmark. Running without "
+            "arguments executes all 900 model runs."
         )
     )
     parser.add_argument(
@@ -36,7 +36,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--methods",
         nargs="+",
-        help="Subset: raw bandpass asr ic_unet",
+        help="Subset: raw bandpass asr ic_unet ica",
     )
     parser.add_argument(
         "--classifiers",

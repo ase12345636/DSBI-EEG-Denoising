@@ -227,7 +227,7 @@ def ensure_dataset(root: Path, task_name: str, force: bool = False) -> Path:
 
 
 def ensure_icunet_checkpoint(root: Path, force: bool = False) -> Path:
-    """Return the recovered author's best-validation IC-U-Net checkpoint."""
+    """Return the required IC-U-Net checkpoint path."""
     destination = (
         root / "denoise" / "ic_unet" / "weights" / "BEST_checkpoint.pth.tar"
     )

@@ -1,4 +1,4 @@
-"""IC-U-Net architecture copied from AIEEG/model/cumbersome_model2.py.
+"""IC-U-Net architecture used by the denoising checkpoint.
 
 Only comments/formatting and unused skip arguments were simplified. Layer names,
 activations, channel sizes, kernels, and forward order are unchanged so the

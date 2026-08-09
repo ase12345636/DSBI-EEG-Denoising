@@ -9,6 +9,7 @@ import os
 import platform
 import random
 import sys
+import time
 from datetime import datetime, timezone
 from importlib import metadata as importlib_metadata
 from pathlib import Path
@@ -62,8 +63,6 @@ _RESULT_COLUMNS = (
     "auc",
 )
 
-CODE_REVISION = "2026-08-05-seizure-stft-microvolt2-v3"
-
 
 def _set_seed(seed: int) -> None:
     """Set Python, NumPy, TensorFlow, and PyTorch random states."""
@@ -116,7 +115,6 @@ class ReproductionPipeline:
 
         self._validate(task_names, method_names, classifier_names)
 
-        print(f"Pipeline: {self.config.pipeline_version}")
         print(f"Tasks: {', '.join(task_names)}")
         print(f"Denoising: {', '.join(method_names)}")
         print(f"Classifiers: {', '.join(classifier_names)}")
@@ -179,6 +177,47 @@ class ReproductionPipeline:
             return 0
 
         repeats = 1 if quick else self.config.repeats
+
+        # Use the current Unix timestamp once as the master seed, then derive
+        # one independent seed per repeat. All methods/classifiers in the same
+        # repeat reuse the same seed so their data split and stochastic state
+        # are directly comparable. For normal runs, persist the master seed so
+        # an interrupted run can resume with exactly the same repeat seeds.
+        seed_plan_path = output_dir / "repeat_seed_plan.json"
+        if not quick and seed_plan_path.exists():
+            try:
+                seed_plan = json.loads(seed_plan_path.read_text(encoding="utf-8"))
+                master_seed = int(seed_plan["master_seed"])
+                print(f"[seed] resumed master seed: {master_seed}")
+            except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+                raise ValueError(
+                    f"Invalid repeat seed plan at {seed_plan_path}: {exc}"
+                ) from exc
+        else:
+            master_seed = int(time.time())
+            print(f"[seed] new master seed: {master_seed}")
+
+        seed_rng = np.random.default_rng(master_seed)
+        repeat_seeds = seed_rng.integers(
+            low=0,
+            high=2**31 - 1,
+            size=repeats,
+            dtype=np.int64,
+        ).tolist()
+
+        if not quick:
+            seed_plan_path.write_text(
+                json.dumps(
+                    {
+                        "master_seed": master_seed,
+                        "repeat_seeds": repeat_seeds,
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+        print(f"[seed] repeat seeds: {repeat_seeds}")
         if quick:
             existing_frame = pd.DataFrame(columns=_RESULT_COLUMNS)
             existing_source = None
@@ -193,7 +232,7 @@ class ReproductionPipeline:
                 method_name,
                 classifier_name,
                 repeat + 1,
-                self.config.base_seed + repeat,
+                repeat_seeds[repeat],
             )
             for task_name in task_names
             for method_name in method_names
@@ -242,7 +281,7 @@ class ReproductionPipeline:
                             method_name,
                             classifier_name,
                             repeat + 1,
-                            self.config.base_seed + repeat,
+                            repeat_seeds[repeat],
                         )
                         for classifier_name in classifier_names
                         for repeat in range(repeats)
@@ -255,6 +294,8 @@ class ReproductionPipeline:
                         continue
 
                     denoiser = load_denoiser(method_name)
+                    if hasattr(denoiser, "configure"):
+                        denoiser.configure(self.config.ica)
                     try:
                         data = task.prepare(
                             data_paths[task_name],
@@ -294,7 +335,7 @@ class ReproductionPipeline:
                     prepare_bar.update()
 
                     for repeat in range(repeats):
-                        seed = self.config.base_seed + repeat
+                        seed = repeat_seeds[repeat]
                         pending_classifiers = [
                             classifier_name
                             for classifier_name in classifier_names
@@ -332,12 +373,27 @@ class ReproductionPipeline:
                                     np.asarray(full_stft[test_index]),
                                 )
                             else:
-                                feature_pair = task.features(
-                                    train_signal,
-                                    test_signal,
-                                    y_train,
-                                    y_test,
+                                method_feature_builder = getattr(
+                                    task, "features_for_method", None
                                 )
+                                if (
+                                    method_name == "ica"
+                                    and method_feature_builder is not None
+                                ):
+                                    feature_pair = method_feature_builder(
+                                        method_name,
+                                        train_signal,
+                                        test_signal,
+                                        y_train,
+                                        y_test,
+                                    )
+                                else:
+                                    feature_pair = task.features(
+                                        train_signal,
+                                        test_signal,
+                                        y_train,
+                                        y_test,
+                                    )
 
                             # Apply a task-defined unit/representation transform
                             # once to the shared feature pair before balancing or
@@ -442,10 +498,8 @@ class ReproductionPipeline:
 
         result_frame = self._normalise_result_frame(pd.DataFrame(rows))
         checkpoint_results(result_frame.to_dict(orient="records"), output_dir)
-        metadata = {
+        manifest = {
             "created_utc": datetime.now(timezone.utc).isoformat(),
-            "pipeline_version": self.config.pipeline_version,
-            "code_revision": CODE_REVISION,
             "python": sys.version,
             "platform": platform.platform(),
             "packages": self._package_versions(),
@@ -453,26 +507,24 @@ class ReproductionPipeline:
             "methods": sorted(result_frame["method"].unique().tolist()),
             "classifiers": sorted(result_frame["classifier"].unique().tolist()),
             "repeats": repeats,
+            "master_seed": master_seed,
+            "repeat_seeds": repeat_seeds,
             "quick": quick,
             "resumed": existing_source is not None,
-            "previous_result_source": (
+            "resumed_from": (
                 str(existing_source) if existing_source is not None else None
             ),
             "total_result_rows": len(result_frame),
             "stft": self.config.stft,
             "eegnet": self.config.eegnet,
             "ic_unet": self.config.ic_unet,
-            "note": (
-                "quick outputs are smoke tests, not report results"
-                if quick
-                else "revised experiment aligned with recovered source code"
-            ),
+            "ica": self.config.ica,
         }
         progress_write(
             "[report] Writing tables and figures from "
             f"{len(result_frame)} merged model runs"
         )
-        write_outputs(result_frame, output_dir, metadata)
+        write_outputs(result_frame, output_dir, manifest)
         print(f"Finished. Results and figures: {output_dir}")
         return 0
 
@@ -518,6 +570,7 @@ class ReproductionPipeline:
     def _normalise_result_frame(frame: pd.DataFrame) -> pd.DataFrame:
         if frame.empty:
             return pd.DataFrame(columns=_RESULT_COLUMNS)
+        frame = frame.copy()
         missing = set(_RESULT_COLUMNS) - set(frame.columns)
         if missing:
             raise ValueError(
@@ -546,7 +599,9 @@ class ReproductionPipeline:
         ).reset_index(drop=True)
 
     @staticmethod
-    def _result_keys(frame: pd.DataFrame) -> set[tuple[str, str, str, int, int]]:
+    def _result_keys(
+        frame: pd.DataFrame,
+    ) -> set[tuple[str, str, str, int, int]]:
         if frame.empty:
             return set()
         frame = ReproductionPipeline._normalise_result_frame(frame)
@@ -633,6 +688,7 @@ class ReproductionPipeline:
             "torch",
             "mne",
             "asrpy",
+            "mne-icalabel",
         )
         versions: dict[str, str] = {}
         for package in packages:
