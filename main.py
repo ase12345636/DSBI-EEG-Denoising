@@ -7,6 +7,7 @@ import argparse
 import os
 from pathlib import Path
 
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 os.environ.setdefault("TF_FORCE_GPU_ALLOW_GROWTH", "true")
 
 from utils.config import load_config
