@@ -11,22 +11,15 @@ class SVMClassifier:
     requires_standardization = True
 
     def fit_predict(self, x_train, y_train, x_test, seed: int, task_name=None, **_):
-        if task_name == "bci_errp":
-            try:
-                from cuml.svm import SVC as cuSVC
-            except ImportError as exc:
-                raise RuntimeError("cuML is required for the BCI reproduction") from exc
-            # Exact model definition used in ML-classifier.ipynb.
-            return fit_cuml_classifier(
-                cuSVC(kernel="linear", probability=True),
-                x_train,
-                y_train,
-                x_test,
-            )
-
-        model = SVC(kernel="linear", probability=True, random_state=seed)
-        model.fit(x_train, y_train)
-        return sklearn_prediction(model, x_test)
-
+        try:
+            from cuml.svm import SVC as cuSVC
+        except ImportError as exc:
+            raise RuntimeError("cuML is required.") from exc
+        return fit_cuml_classifier(
+            cuSVC(kernel="linear", probability=True),
+            x_train,
+            y_train,
+            x_test,
+        )
 
 CLASSIFIER = SVMClassifier()

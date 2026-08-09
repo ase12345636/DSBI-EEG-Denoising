@@ -11,16 +11,11 @@ class LogisticRegressionClassifier:
     requires_standardization = True
 
     def fit_predict(self, x_train, y_train, x_test, seed: int, task_name=None, **_):
-        if task_name == "bci_errp":
-            try:
-                from cuml.linear_model import LogisticRegression as cuLR
-            except ImportError as exc:
-                raise RuntimeError("cuML is required for the BCI reproduction") from exc
-            return fit_cuml_classifier(cuLR(), x_train, y_train, x_test)
-
-        model = LogisticRegression(random_state=seed, max_iter=1000)
-        model.fit(x_train, y_train)
-        return sklearn_prediction(model, x_test)
+        try:
+            from cuml.linear_model import LogisticRegression as cuLR
+        except ImportError as exc:
+            raise RuntimeError("cuML is required.") from exc
+        return fit_cuml_classifier(cuLR(), x_train, y_train, x_test)
 
 
 CLASSIFIER = LogisticRegressionClassifier()

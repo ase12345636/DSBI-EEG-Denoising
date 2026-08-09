@@ -136,7 +136,7 @@ class EEGNetModel:
         )
 
         cache_dir.mkdir(parents=True, exist_ok=True)
-        checkpoint = cache_dir / f"eegnet-v2-{seed}.weights.h5"
+        checkpoint = cache_dir / f"eegnet-{seed}.weights.h5"
         epochs = 2 if quick else int(config.get("epochs", 150))
         patience = 2 if quick else int(config.get("patience", 10))
         # Match DL-classifer.ipynb: checkpoint by val_loss, but early stop by
