@@ -115,6 +115,7 @@ class ReproductionPipeline:
 
         self._validate(task_names, method_names, classifier_names)
 
+        print(f"Pipeline: {self.config.pipeline_version}")
         print(f"Tasks: {', '.join(task_names)}")
         print(f"Denoising: {', '.join(method_names)}")
         print(f"Classifiers: {', '.join(classifier_names)}")
@@ -500,6 +501,7 @@ class ReproductionPipeline:
         checkpoint_results(result_frame.to_dict(orient="records"), output_dir)
         manifest = {
             "created_utc": datetime.now(timezone.utc).isoformat(),
+            "pipeline_version": self.config.pipeline_version,
             "python": sys.version,
             "platform": platform.platform(),
             "packages": self._package_versions(),

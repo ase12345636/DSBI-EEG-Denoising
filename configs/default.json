@@ -1,4 +1,5 @@
 {
+  "pipeline_version": "report-reproduction-plus-ica-cuml-v3",
   "tasks": [
     "bci_errp",
     "seizure_detection",
@@ -20,7 +21,7 @@
     "eegnet"
   ],
   "repeats": 10,
-  "legacy_mode": false,
+  "base_seed": 0,
   "output_dir": "output",
   "cache_dir": ".cache",
   "stft": {
@@ -28,34 +29,17 @@
     "nperseg": 256,
     "overlap_fraction": 0.5,
     "boundary": "zeros",
-    "padded": true,
-    "power": true
+    "padded": true
   },
   "eegnet": {
     "epochs": 150,
     "batch_size": 32,
     "patience": 10,
-    "monitor": "val_loss",
     "verbose": 0
   },
-  "ic_unet": {
-    "checkpoint": "BEST_checkpoint.pth.tar",
-    "recording_chunk_seconds": 30,
-    "recording_overlap_seconds": 2
-  },
+  "ic_unet": {},
   "ica": {
-    "decomposition": "extended_infomax",
-    "component_labeler": "iclabel",
     "random_state": 97,
-    "fit_sample_budget_seconds": 300.0,
-    "keep_labels": [
-      "brain",
-      "other"
-    ],
-    "fit_reference": "common_average",
-    "fit_band_hz": [
-      1.0,
-      100.0
-    ]
+    "max_fit_seconds": 300.0
   }
 }

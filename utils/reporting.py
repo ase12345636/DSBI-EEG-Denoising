@@ -19,7 +19,7 @@ TABLE_NUMBERS = {
     "seizure_detection": (7, 8),
     "attention_state": (9, 10),
 }
-METHOD_ORDER = ("raw", "bandpass", "ica", "asr", "ic_unet")
+METHOD_ORDER = ("raw", "bandpass", "asr", "ic_unet", "ica")
 CLASSIFIER_ORDER = (
     "logistic_regression", "svm", "random_forest", "lightgbm", "mlp", "eegnet"
 )

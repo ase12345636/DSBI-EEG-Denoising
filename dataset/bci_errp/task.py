@@ -1,4 +1,4 @@
-"""BCI ErrP preprocessing and evaluation task."""
+"""BCI ErrP task reproduced from the author's BCI-task source."""
 
 from __future__ import annotations
 
@@ -23,135 +23,148 @@ FS = 200.0
 
 class BCIErrPTask:
     name = "bci_errp"
-    cache_version = "bci"
     feature_kind = "xdawn_tangent"
     validation_size = 0.25
 
     def prepare(self, data_dir: Path, cache_dir: Path, denoiser, checkpoint_path: Path | None,
                 quick: bool) -> SignalDataset:
-        # Quick ICA uses representative sessions and must use a separate cache.
-        cache_method = denoiser.name
-        if denoiser.name == "ica":
-            cache_method = "ica-v4-quick" if quick else "ica-v4"
-        variant_cache = cache_dir / self.name / f"{self.cache_version}-{cache_method}.npz"
-        if variant_cache.exists():
-            return self._load(variant_cache, quick)
-        if denoiser.name == "ica":
-            dataset = self._ica_epochs(data_dir, denoiser, quick=quick)
-            self._save(variant_cache, dataset)
-            denoiser.save_reports(variant_cache.with_suffix(".components.json"))
-            return self._quick(dataset) if quick else dataset
+        cache = cache_dir / self.name / f"{denoiser.name}.npz"
+        if cache.exists() and not quick:
+            return self._load(cache)
 
-        raw = self._raw_epochs(data_dir, cache_dir)
-        kwargs = {"task_name": self.name}
-        if checkpoint_path is not None:
-            kwargs["checkpoint_path"] = checkpoint_path
+        if denoiser.name == "ica":
+            data = self._ica_epochs(data_dir, denoiser, quick)
+            if not quick:
+                self._save(cache, data)
+                denoiser.save_reports(cache.with_suffix(".components.json"))
+            return data
+
+        raw = self._raw_epochs(data_dir, quick)
+        unbaselined = raw.signals
+
+        # This ordering follows preprocessing_data.ipynb, not the alternate
+        # preprocessing_data_copy.ipynb: epoch first, then method, then baseline.
         if denoiser.name == "bandpass":
-            # Filter each raw epoch, then subtract its baseline.
-            signals = denoiser.transform(raw.signals, FS, **kwargs)
-            signals -= np.mean(signals[:, :, :20], axis=2, keepdims=True)
-        elif denoiser.name == "asr":
-            # Apply 1--40 Hz filtering and baseline correction before epoch-level ASR.
-            from denoise.bandpass.method import butter_bandpass_filter
-
-            filtered = butter_bandpass_filter(raw.signals, FS, highcut=40.0)
-            filtered -= np.mean(filtered[:, :, :20], axis=2, keepdims=True)
-            signals = np.stack([
-                denoiser.transform_recording(epoch, FS)
-                for epoch in progress(
-                    filtered, total=len(filtered), desc="BCI ASR", unit="epoch", leave=False
-                )
-            ])
+            signals = denoiser.transform(unbaselined, FS, task_name=self.name)
+            signals = self._baseline(signals)
         else:
-            # Raw and IC-U-Net both receive the baseline-corrected epoch.
-            baseline_corrected = raw.signals - np.mean(
-                raw.signals[:, :, :20], axis=2, keepdims=True
-            )
-            signals = denoiser.transform(baseline_corrected, FS, **kwargs)
-        dataset = SignalDataset(
-            signals=signals, labels=raw.labels, sampling_rate=FS,
+            baseline_corrected = self._baseline(unbaselined)
+            if denoiser.name == "raw":
+                signals = baseline_corrected
+            elif denoiser.name == "asr":
+                # The source notebook calibrates ASR independently on each
+                # baseline-corrected 700-ms epoch with cutoff k=5.
+                signals = denoiser.transform(
+                    baseline_corrected, FS, task_name=self.name
+                )
+            elif denoiser.name == "ic_unet":
+                if checkpoint_path is None:
+                    raise ValueError("IC-U-Net checkpoint path is required")
+                signals = denoiser.transform(
+                    baseline_corrected,
+                    FS,
+                    checkpoint_path=checkpoint_path,
+                    task_name=self.name,
+                )
+            else:
+                raise ValueError(f"Unsupported BCI denoiser: {denoiser.name}")
+
+        data = SignalDataset(
+            signals=np.asarray(signals, dtype=np.float32),
+            labels=raw.labels,
+            sampling_rate=FS,
             class_names=("bad_feedback", "good_feedback"),
-            primary_metric="balanced_accuracy", fixed_train=raw.fixed_train,
-            groups=raw.groups,
+            primary_metric="balanced_accuracy",
+            fixed_train=raw.fixed_train,
         )
-        self._save(variant_cache, dataset)
-        return self._quick(dataset) if quick else dataset
+        data.validate()
+        if not quick:
+            self._save(cache, data)
+        return data
 
-    def split(self, data: SignalDataset, seed: int):
+    @staticmethod
+    def split(data: SignalDataset, seed: int):
         del seed
-        train = np.flatnonzero(data.fixed_train)
-        test = np.flatnonzero(~data.fixed_train)
-        return train, test
+        return np.flatnonzero(data.fixed_train), np.flatnonzero(~data.fixed_train)
 
-    def features(self, train, test, y_train, y_test):
+    @staticmethod
+    def features(train, test, y_train, y_test):
         del y_test
         return bci_xdawn_tangent(train, test, y_train)
 
     @staticmethod
     def standardize_features(x_train, x_test):
-        # Tangent-space features are passed directly to the classifiers.
+        # The author's BCI ML notebook feeds tangent-space features directly
+        # to the classifiers.
         return np.asarray(x_train), np.asarray(x_test)
 
-    def balance_features(self, x_train, y_train, seed: int):
-        try:
-            from imblearn.over_sampling import SMOTE
-        except ImportError as exc:
-            raise RuntimeError("BCI feature balancing needs imbalanced-learn") from exc
+    @staticmethod
+    def balance_features(x_train, y_train, seed: int):
+        from imblearn.over_sampling import SMOTE
         return SMOTE(random_state=seed).fit_resample(x_train, y_train)
 
-    def _ica_epochs(
-        self,
-        data_dir: Path,
-        denoiser,
-        *,
-        quick: bool,
-    ) -> SignalDataset:
-        """Run ICA on each continuous BCI session before epoching."""
-        csv_files = sorted(data_dir.rglob("Data_S*_Sess*.csv"))
-        if not csv_files:
-            raise FileNotFoundError(
-                f"No BCI Data_S*_Sess*.csv files found below {data_dir}"
-            )
+    @staticmethod
+    def _baseline(signals: np.ndarray) -> np.ndarray:
+        values = np.asarray(signals, dtype=np.float64).copy()
+        values -= np.mean(values[:, :, :20], axis=2, keepdims=True)
+        return values
+
+    def _raw_epochs(self, data_dir: Path, quick: bool) -> SignalDataset:
+        files = sorted(data_dir.rglob("Data_S*_Sess*.csv"))
+        if not files:
+            raise FileNotFoundError(f"No BCI session CSV files found below {data_dir}")
         if quick:
-            train_file = next(
-                (
-                    path
-                    for path in csv_files
-                    if int(path.name.split("_S", 1)[1].split("_", 1)[0])
-                    not in TEST_SUBJECTS
-                ),
-                None,
-            )
-            test_file = next(
-                (
-                    path
-                    for path in csv_files
-                    if int(path.name.split("_S", 1)[1].split("_", 1)[0])
-                    in TEST_SUBJECTS
-                ),
-                None,
-            )
-            if train_file is None or test_file is None:
-                raise ValueError(
-                    "BCI ICA quick mode needs at least one training and one test session"
-                )
-            csv_files = [train_file, test_file]
+            train_file = next(p for p in files if self._subject(p) not in TEST_SUBJECTS)
+            test_file = next(p for p in files if self._subject(p) in TEST_SUBJECTS)
+            files = [train_file, test_file]
 
         train_labels = self._label_map(data_dir, "TrainLabels.csv")
         test_labels = self._test_label_map(data_dir)
-        epochs: list[np.ndarray] = []
-        labels: list[int] = []
-        train_mask: list[bool] = []
-        groups: list[str] = []
+        epochs, labels, train_mask = [], [], []
 
-        for path in progress(
-            csv_files,
-            total=len(csv_files),
-            desc="BCI ICA",
-            unit="file",
-            leave=False,
-        ):
-            subject = int(path.name.split("_S", 1)[1].split("_", 1)[0])
+        for path in progress(files, total=len(files), desc="BCI epoching", unit="file", leave=False):
+            subject = self._subject(path)
+            is_train = subject not in TEST_SUBJECTS
+            frame = pd.read_csv(path, usecols=[*CHANNELS, "FeedBackEvent"])
+            markers = np.flatnonzero(frame["FeedBackEvent"].to_numpy() == 1)
+            eeg = frame.loc[:, CHANNELS].to_numpy(dtype=np.float64).T
+            label_map = train_labels if is_train else test_labels
+            prefix = path.stem.removeprefix("Data_")
+
+            for event_number, marker in enumerate(markers, start=1):
+                epoch = eeg[:, marker - 20 : marker + 120]
+                if epoch.shape[-1] != 140:
+                    continue
+                event_id = f"{prefix}_FB{event_number:03d}"
+                epochs.append(epoch)
+                labels.append(label_map[event_id])
+                train_mask.append(is_train)
+
+        return SignalDataset(
+            np.stack(epochs),
+            np.asarray(labels, dtype=np.int8),
+            FS,
+            ("bad_feedback", "good_feedback"),
+            "balanced_accuracy",
+            fixed_train=np.asarray(train_mask, dtype=bool),
+        )
+
+    def _ica_epochs(self, data_dir: Path, denoiser, quick: bool) -> SignalDataset:
+        """ICA is the one added method and must be fitted on continuous EEG."""
+        files = sorted(data_dir.rglob("Data_S*_Sess*.csv"))
+        if not files:
+            raise FileNotFoundError(f"No BCI session CSV files found below {data_dir}")
+        if quick:
+            train_file = next(p for p in files if self._subject(p) not in TEST_SUBJECTS)
+            test_file = next(p for p in files if self._subject(p) in TEST_SUBJECTS)
+            files = [train_file, test_file]
+
+        train_labels = self._label_map(data_dir, "TrainLabels.csv")
+        test_labels = self._test_label_map(data_dir)
+        epochs, labels, train_mask = [], [], []
+
+        for path in progress(files, total=len(files), desc="BCI ICA", unit="file", leave=False):
+            subject = self._subject(path)
             is_train = subject not in TEST_SUBJECTS
             frame = pd.read_csv(path, usecols=[*CHANNELS, "FeedBackEvent"])
             markers = np.flatnonzero(frame["FeedBackEvent"].to_numpy() == 1)
@@ -164,128 +177,77 @@ class BCIErrPTask:
                 task_name=self.name,
                 recording_id=path.stem,
             )
-            prefix = path.stem.removeprefix("Data_")
             label_map = train_labels if is_train else test_labels
+            prefix = path.stem.removeprefix("Data_")
+
             for event_number, marker in enumerate(markers, start=1):
-                segment = cleaned[:, marker - 20 : marker + 120]
-                if segment.shape[-1] != 140:
+                epoch = cleaned[:, marker - 20 : marker + 120]
+                if epoch.shape[-1] != 140:
                     continue
-                segment = segment - np.mean(
-                    segment[:, :20], axis=1, keepdims=True
-                )
+                epoch = epoch - np.mean(epoch[:, :20], axis=1, keepdims=True)
                 event_id = f"{prefix}_FB{event_number:03d}"
-                if event_id not in label_map:
-                    raise KeyError(f"Missing BCI label for {event_id}")
-                epochs.append(segment.astype(np.float32, copy=False))
+                epochs.append(epoch)
                 labels.append(label_map[event_id])
                 train_mask.append(is_train)
-                groups.append(prefix.split("_Sess", 1)[0])
 
-        dataset = SignalDataset(
-            signals=np.stack(epochs),
-            labels=np.asarray(labels, dtype=np.int8),
-            sampling_rate=FS,
-            class_names=("bad_feedback", "good_feedback"),
-            primary_metric="balanced_accuracy",
+        return SignalDataset(
+            np.stack(epochs).astype(np.float32),
+            np.asarray(labels, dtype=np.int8),
+            FS,
+            ("bad_feedback", "good_feedback"),
+            "balanced_accuracy",
             fixed_train=np.asarray(train_mask, dtype=bool),
-            groups=np.asarray(groups),
         )
-        dataset.validate()
-        return dataset
 
-    def _raw_epochs(self, data_dir: Path, cache_dir: Path) -> SignalDataset:
-        cache = cache_dir / self.name / f"{self.cache_version}-raw-unbaselined-epochs.npz"
-        if cache.exists():
-            return self._load(cache, quick=False)
-        csv_files = sorted(data_dir.rglob("Data_S*_Sess*.csv"))
-        if not csv_files:
-            raise FileNotFoundError(f"No BCI Data_S*_Sess*.csv files found below {data_dir}")
-        train_labels = self._label_map(data_dir, "TrainLabels.csv")
-        test_labels = self._test_label_map(data_dir)
-        epochs: list[np.ndarray] = []
-        labels: list[int] = []
-        train_mask: list[bool] = []
-        groups: list[str] = []
-        for path in progress(
-            csv_files, total=len(csv_files), desc="BCI epoching", unit="file", leave=False
-        ):
-            subject = int(path.name.split("_S", 1)[1].split("_", 1)[0])
-            is_train = subject not in TEST_SUBJECTS
-            frame = pd.read_csv(path, usecols=[*CHANNELS, "FeedBackEvent"])
-            markers = np.flatnonzero(frame["FeedBackEvent"].to_numpy() == 1)
-            eeg = frame.loc[:, CHANNELS].to_numpy(dtype=np.float64).T
-            prefix = path.stem.removeprefix("Data_")
-            label_map = train_labels if is_train else test_labels
-            for event_number, marker in enumerate(markers, start=1):
-                segment = eeg[:, marker - 20:marker + 120]
-                if segment.shape[-1] != 140:
-                    continue
-                event_id = f"{prefix}_FB{event_number:03d}"
-                if event_id not in label_map:
-                    raise KeyError(f"Missing BCI label for {event_id}")
-                epochs.append(segment)
-                labels.append(label_map[event_id])
-                train_mask.append(is_train)
-                groups.append(prefix.split("_Sess", 1)[0])
-        dataset = SignalDataset(
-            signals=np.stack(epochs), labels=np.asarray(labels, dtype=np.int8), sampling_rate=FS,
-            class_names=("bad_feedback", "good_feedback"), primary_metric="balanced_accuracy",
-            fixed_train=np.asarray(train_mask, dtype=bool), groups=np.asarray(groups),
-        )
-        dataset.validate()
-        self._save(cache, dataset)
-        return dataset
+    @staticmethod
+    def _subject(path: Path) -> int:
+        return int(path.name.split("_S", 1)[1].split("_", 1)[0])
 
     @staticmethod
     def _label_map(data_dir: Path, filename: str) -> dict[str, int]:
-        matches = list(data_dir.rglob(filename))
-        if not matches:
-            raise FileNotFoundError(f"{filename} was not downloaded below {data_dir}")
-        frame = pd.read_csv(matches[0])
+        path = next(iter(data_dir.rglob(filename)), None)
+        if path is None:
+            raise FileNotFoundError(f"{filename} not found below {data_dir}")
+        frame = pd.read_csv(path)
         return {str(row.IdFeedBack): int(row.Prediction) for row in frame.itertuples()}
 
     @staticmethod
     def _test_label_map(data_dir: Path) -> dict[str, int]:
-        id_files = list(data_dir.rglob("benchmark.csv"))
-        if not id_files:
-            id_files = list(data_dir.rglob("SampleSubmission.csv"))
-        bundled = Path(__file__).with_name("evaluation_labels.csv")
-        downloaded = list(data_dir.rglob("true_labels.csv"))
-        label_file = downloaded[0] if downloaded else bundled
-        if not id_files or not label_file.exists():
-            raise FileNotFoundError(
-                "BCI evaluation needs benchmark.csv or SampleSubmission.csv plus "
-                "dataset/bci_errp/evaluation_labels.csv"
-            )
-        ids = pd.read_csv(id_files[0])["IdFeedBack"].astype(str).to_numpy()
-        labels = pd.read_csv(label_file, header=None).iloc[:, 0].astype(int).to_numpy()
-        if len(ids) != len(labels):
-            raise ValueError(f"BCI test ID/label length mismatch: {len(ids)} vs {len(labels)}")
-        return dict(zip(ids, labels))
+        id_file = next(iter(data_dir.rglob("benchmark.csv")), None)
+        if id_file is None:
+            id_file = next(iter(data_dir.rglob("SampleSubmission.csv")), None)
+        label_file = next(iter(data_dir.rglob("true_labels.csv")), None)
+        if label_file is None:
+            label_file = Path(__file__).with_name("evaluation_labels.csv")
+        if id_file is None or not label_file.exists():
+            raise FileNotFoundError("BCI test IDs or evaluation labels are missing")
+        ids = pd.read_csv(id_file)["IdFeedBack"].astype(str).to_numpy()
+        values = pd.read_csv(label_file, header=None).iloc[:, 0].astype(int).to_numpy()
+        if len(ids) != len(values):
+            raise ValueError("BCI test ID/label length mismatch")
+        return dict(zip(ids, values))
 
     @staticmethod
     def _save(path: Path, data: SignalDataset) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(path, signals=data.signals, labels=data.labels,
-            fixed_train=data.fixed_train, groups=data.groups)
-
-    def _load(self, path: Path, quick: bool) -> SignalDataset:
-        with np.load(path, allow_pickle=False) as saved:
-            data = SignalDataset(saved["signals"], saved["labels"], FS,
-                ("bad_feedback", "good_feedback"), "balanced_accuracy",
-                saved["fixed_train"], saved["groups"])
-        return self._quick(data) if quick else data
+        np.savez_compressed(
+            path,
+            signals=data.signals,
+            labels=data.labels,
+            fixed_train=data.fixed_train,
+        )
 
     @staticmethod
-    def _quick(data: SignalDataset) -> SignalDataset:
-        selected: list[int] = []
-        for train_value in (True, False):
-            for label in np.unique(data.labels):
-                candidates = np.flatnonzero((data.fixed_train == train_value) & (data.labels == label))
-                selected.extend(candidates[:64])
-        indices = np.asarray(sorted(selected))
-        return SignalDataset(data.signals[indices], data.labels[indices], data.sampling_rate,
-            data.class_names, data.primary_metric, data.fixed_train[indices], data.groups[indices])
+    def _load(path: Path) -> SignalDataset:
+        with np.load(path, allow_pickle=False) as saved:
+            return SignalDataset(
+                saved["signals"],
+                saved["labels"],
+                FS,
+                ("bad_feedback", "good_feedback"),
+                "balanced_accuracy",
+                fixed_train=saved["fixed_train"],
+            )
 
 
 TASK = BCIErrPTask()

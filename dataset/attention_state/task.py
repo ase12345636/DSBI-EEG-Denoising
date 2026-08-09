@@ -1,9 +1,8 @@
-"""Mental-attention preprocessing and evaluation task."""
+"""Mental-attention downstream task, matching the report's 80/20 sample split."""
 
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 
 import numpy as np
@@ -18,59 +17,33 @@ ATTENTION_CHANNELS = (
     "AF3", "F7", "F3", "FC5", "T7", "P7", "O1",
     "O2", "P8", "T8", "FC6", "F4", "F8", "AF4",
 )
-WINDOW = 640
+WINDOW = 5 * 128
 STATE_SAMPLES = 10 * 60 * 128
-EXPECTED_RECORDINGS = 34
-SUBJECT_RECORDING_COUNTS = (7, 7, 7, 7, 6)
-CACHE_VERSION = "attention"
 
 
 class AttentionStateTask:
     name = "attention_state"
-    cache_version = CACHE_VERSION
     feature_kind = "stft_mean_power"
     validation_size = 0.20
 
-    def prepare(
-        self,
-        data_dir: Path,
-        cache_dir: Path,
-        denoiser,
-        checkpoint_path: Path | None,
-        quick: bool,
-    ) -> SignalDataset:
-        # Quick ICA uses one recording and must use a separate cache.
-        cache_method = denoiser.name
-        if denoiser.name == "ica":
-            cache_method = "ica-v4-quick" if quick else "ica-v4"
-        cache = cache_dir / self.name / f"{CACHE_VERSION}-{cache_method}.npz"
-        if cache.exists():
-            return self._load(cache, quick)
+    def prepare(self, data_dir: Path, cache_dir: Path, denoiser, checkpoint_path: Path | None,
+                quick: bool) -> SignalDataset:
+        cache = cache_dir / self.name / f"{denoiser.name}.npz"
+        if cache.exists() and not quick:
+            return self._load(cache)
 
         files = self._selected_files(data_dir)
         if quick:
             files = files[:1]
-        windows: list[np.ndarray] = []
-        labels: list[int] = []
-        groups: list[str] = []
 
-        for path in progress(
-            files,
-            total=len(files),
-            desc="Attention recordings",
-            unit="file",
-            leave=False,
-        ):
-            signal = self._load_eeg(path)
+        windows, labels, groups = [], [], []
+        for path in progress(files, total=len(files), desc="Attention recordings", unit="file", leave=False):
+            signal = self._load_eeg(path)[:, : 3 * STATE_SAMPLES]
             if signal.shape[1] < 3 * STATE_SAMPLES:
-                raise ValueError(
-                    f"{path.name} is shorter than the required first 30 minutes: "
-                    f"{signal.shape[1] / FS / 60:.2f} minutes"
-                )
-            signal = signal[:, : 3 * STATE_SAMPLES]
+                raise ValueError(f"{path.name} is shorter than 30 minutes")
 
-            # ICA must operate on continuous, positioned scalp data.
-            # It is therefore applied before per-channel z-score normalization.
+            # ICA needs the physical continuous scalp signal. It is the only
+            # method run before the report's per-recording Z-score step.
             if denoiser.name == "ica":
                 signal = denoiser.transform_recording(
                     signal,
@@ -79,24 +52,18 @@ class AttentionStateTask:
                     unit_scale_to_volts=1e-6,
                     task_name=self.name,
                     recording_id=path.stem,
-                ).astype(np.float64)
+                )
 
-            # Standardize each recording before 5-second segmentation. Statistics
-            # are channel-wise and use only that recording, avoiding leakage.
-            mean = np.mean(signal, axis=1, keepdims=True)
-            standard_deviation = np.std(signal, axis=1, keepdims=True)
-            signal = (signal - mean) / np.where(
-                standard_deviation == 0, 1.0, standard_deviation
-            )
+            mean = signal.mean(axis=1, keepdims=True)
+            std = signal.std(axis=1, keepdims=True)
+            signal = (signal - mean) / np.where(std == 0, 1.0, std)
 
-            # Long-recording processing is preferable for ASR calibration and
-            # avoids independent filter edge effects at every 5-second window.
             if denoiser.name in {"raw", "ica"}:
-                processed = np.asarray(signal, dtype=np.float32)
+                processed = signal
             elif denoiser.name == "asr":
-                processed = denoiser.transform_recording(signal, FS).astype(np.float32)
+                processed = denoiser.transform_recording(signal, FS)
             elif denoiser.name == "bandpass":
-                processed = denoiser.transform(signal[np.newaxis], FS)[0].astype(np.float32)
+                processed = denoiser.transform(signal[None], FS)[0]
             elif denoiser.name == "ic_unet":
                 if checkpoint_path is None:
                     raise ValueError("IC-U-Net checkpoint path is required")
@@ -105,67 +72,44 @@ class AttentionStateTask:
                     FS,
                     checkpoint_path,
                     task_name=self.name,
-                    chunk_seconds=30,
-                    overlap_seconds=2,
                 )
             else:
-                processed = denoiser.transform(
-                    signal[np.newaxis], FS, task_name=self.name
-                )[0].astype(np.float32)
+                raise ValueError(f"Unsupported Attention denoiser: {denoiser.name}")
 
             for label in range(3):
-                state = processed[
-                    :,
-                    label * STATE_SAMPLES : (label + 1) * STATE_SAMPLES,
-                ]
+                state = processed[:, label * STATE_SAMPLES : (label + 1) * STATE_SAMPLES]
                 for start in range(0, STATE_SAMPLES, WINDOW):
                     window = state[:, start : start + WINDOW]
-                    if window.shape[-1] != WINDOW:
-                        continue
-                    windows.append(window.astype(np.float32, copy=False))
-                    labels.append(label)
-                    groups.append(path.stem)
+                    if window.shape[-1] == WINDOW:
+                        windows.append(window.astype(np.float32, copy=False))
+                        labels.append(label)
+                        groups.append(path.stem)
 
-        signals = np.stack(windows)
-        dataset = SignalDataset(
-            signals=signals,
-            labels=np.asarray(labels, dtype=np.int8),
-            sampling_rate=FS,
-            class_names=("focused", "unfocused", "drowsy"),
-            primary_metric="accuracy",
+        data = SignalDataset(
+            np.stack(windows),
+            np.asarray(labels, dtype=np.int8),
+            FS,
+            ("focused", "unfocused", "drowsy"),
+            "accuracy",
             groups=np.asarray(groups),
         )
-        dataset.validate()
-        self._save(cache, dataset)
-        if denoiser.name == "ica":
-            denoiser.save_reports(cache.with_suffix(".components.json"))
-        return self._quick(dataset) if quick else dataset
+        data.validate()
+        if not quick:
+            self._save(cache, data)
+            if denoiser.name == "ica":
+                denoiser.save_reports(cache.with_suffix(".components.json"))
+        return data
 
     @staticmethod
     def split(data: SignalDataset, seed: int):
         from sklearn.model_selection import train_test_split
-
         indices = np.arange(len(data.labels))
-
-        return train_test_split(
-            indices,
-            test_size=0.2,
-            stratify=data.labels,
-            random_state=seed,
-        )
+        return train_test_split(indices, test_size=0.2, stratify=data.labels, random_state=seed)
 
     @staticmethod
-    def features(
-        train,
-        test,
-        y_train,
-        y_test,
-    ):
+    def features(train, test, y_train, y_test):
         del y_train, y_test
-        return (
-            stft_mean_power(train, FS),
-            stft_mean_power(test, FS),
-        )
+        return stft_mean_power(train, FS), stft_mean_power(test, FS)
 
     @staticmethod
     def balance_features(x_train, y_train, seed: int):
@@ -175,385 +119,63 @@ class AttentionStateTask:
     @staticmethod
     def standardize_features(x_train, x_test):
         from sklearn.preprocessing import StandardScaler
-
         scaler = StandardScaler()
         return scaler.fit_transform(x_train), scaler.transform(x_test)
 
-    def _selected_files(self, data_dir: Path) -> list[Path]:
-        all_files = sorted(
-            data_dir.rglob("*.mat"),
-            key=self._natural_path_key,
-        )
-
-        if len(all_files) < 23:
-            raise FileNotFoundError(
-                f"Expected at least 23 attention .mat files below {data_dir}"
-            )
-
-        selection_path = Path(__file__).with_name(
-            "selection.json"
-        )
-
-        if selection_path.exists():
-            payload = json.loads(
-                selection_path.read_text(
-                    encoding="utf-8"
-                )
-            )
-            names = payload["files"]
-            by_name = {
-                path.name: path
-                for path in all_files
-            }
-            missing = [
-                name
-                for name in names
-                if name not in by_name
-            ]
-
-            if missing:
-                raise FileNotFoundError(
-                    "selection.json names not downloaded: "
-                    f"{missing}"
-                )
-
-            selected = [
-                by_name[name]
-                for name in names
-            ]
-
-            invalid = [
-                path.name
-                for path in selected
-                if self._load_eeg(path).shape[1]
-                < 3 * STATE_SAMPLES
-            ]
-
-            if not invalid:
-                return selected
-
-            print(
-                "[attention] Existing selection.json contains "
-                "recordings shorter than 30 minutes; rebuilding it: "
-                + ", ".join(invalid)
-            )
-
-        grouped: dict[str, list[Path]] = {}
-
-        for path in all_files:
-            key = re.sub(
-                r"[_-]?\d+$",
-                "",
-                path.stem,
-            )
-            grouped.setdefault(
-                key,
-                [],
-            ).append(path)
-
-        if (
-            len(grouped) != 5
-            or any(
-                len(group) < 6
-                for group in grouped.values()
-            )
-        ):
-            if len(all_files) != EXPECTED_RECORDINGS:
-                raise ValueError(
-                    "The official attention release has "
-                    f"{EXPECTED_RECORDINGS} files; got "
-                    f"{len(all_files)}"
-                )
-
-            grouped = {}
-            cursor = 0
-
-            for subject, size in enumerate(
-                SUBJECT_RECORDING_COUNTS,
-                start=1,
-            ):
-                grouped[str(subject)] = all_files[
-                    cursor : cursor + size
-                ]
-                cursor += size
-
-        candidates = [
-            path
-            for group in grouped.values()
-            for path in sorted(
-                group,
-                key=self._natural_path_key,
-            )[2:]
-        ]
-
-        if len(candidates) != 24:
-            raise ValueError(
-                "Could not reconstruct the required "
-                "post-habituation set: got "
-                f"{len(candidates)} files"
-            )
-
-        quality: list[tuple[Path, int, float]] = []
-
-        for path in progress(
-            candidates,
-            total=len(candidates),
-            desc="Attention quality scan",
-            unit="file",
-            leave=False,
-        ):
-            eeg = self._load_eeg(path)
-            quality.append(
-                (
-                    path,
-                    eeg.shape[1],
-                    self._outlier_score_from_eeg(eeg),
-                )
-            )
-
-        required_samples = 3 * STATE_SAMPLES
-        short_recordings = [
-            item
-            for item in quality
-            if item[1] < required_samples
-        ]
-
-        if len(short_recordings) == 1:
-            rejected = short_recordings[0][0]
-        elif len(short_recordings) > 1:
-            details = ", ".join(
-                f"{path.name}="
-                f"{sample_count / FS / 60:.2f}min"
-                for path, sample_count, _ in short_recordings
-            )
-            raise ValueError(
-                "More than one post-habituation Attention "
-                "recording is shorter than 30 minutes: "
-                f"{details}"
-            )
-
-        else:
-            rejected = max(
-                quality,
-                key=lambda item: item[2],
-            )[0]
-
-        selected = [
-            path
-            for path in candidates
-            if path != rejected
-        ]
-
-        selection_path.write_text(
-            json.dumps(
-                {
-                    "files": [
-                        path.name
-                        for path in selected
-                    ],
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-
-        return selected
-
-
     @staticmethod
-    def _outlier_score_from_eeg(
-        eeg: np.ndarray,
-    ) -> float:
-        centered = eeg - np.median(
-            eeg,
-            axis=1,
-            keepdims=True,
-        )
-        return float(
-            np.median(
-                np.max(
-                    np.abs(centered),
-                    axis=1,
-                )
-            )
-        )
+    def _selected_files(data_dir: Path) -> list[Path]:
+        selection = json.loads(Path(__file__).with_name("selection.json").read_text(encoding="utf-8"))["files"]
+        by_name = {path.name: path for path in data_dir.rglob("*.mat")}
+        missing = [name for name in selection if name not in by_name]
+        if missing:
+            raise FileNotFoundError("Missing Attention files: " + ", ".join(missing))
+        return [by_name[name] for name in selection]
 
     @staticmethod
     def _load_eeg(path: Path) -> np.ndarray:
         from scipy.io import loadmat
 
-        content = loadmat(
-            path,
-            squeeze_me=True,
-            struct_as_record=False,
-        )
-
+        content = loadmat(path, squeeze_me=True, struct_as_record=False)
         obj = content.get("o")
-        data = (
-            getattr(obj, "data", None)
-            if obj is not None
-            else None
-        )
-
+        data = getattr(obj, "data", None) if obj is not None else None
         if data is None:
-            arrays = [
-                value
-                for key, value in content.items()
-                if (
-                    not key.startswith("__")
-                    and isinstance(value, np.ndarray)
-                    and value.ndim == 2
-                )
-            ]
-
+            arrays = [v for k, v in content.items() if not k.startswith("__") and isinstance(v, np.ndarray) and v.ndim == 2]
             if not arrays:
-                raise ValueError(
-                    f"Could not find o.data in {path}"
-                )
+                raise ValueError(f"Could not find EEG matrix in {path}")
+            data = max(arrays, key=lambda value: value.size)
 
-            data = max(
-                arrays,
-                key=lambda value: value.size,
-            )
-
-        data = np.asarray(
-            data,
-            dtype=np.float64,
-        )
-
-        if data.ndim != 2:
-            raise ValueError(
-                "Unexpected attention matrix dimensions "
-                f"in {path}: {data.shape}"
-            )
-
+        data = np.asarray(data, dtype=np.float64)
         if data.shape[1] == 25:
             eeg = data[:, 3:17].T
-
         elif data.shape[0] == 25:
-            eeg = data[3:17, :]
-
+            eeg = data[3:17]
         elif data.shape[1] == 14:
             eeg = data.T
-
         elif data.shape[0] == 14:
             eeg = data
-
-        elif (
-            data.shape[1] >= 17
-            and data.shape[0] > data.shape[1]
-        ):
+        elif data.shape[1] >= 17 and data.shape[0] > data.shape[1]:
             eeg = data[:, 3:17].T
-
-        elif (
-            data.shape[0] >= 17
-            and data.shape[1] > data.shape[0]
-        ):
-            eeg = data[3:17, :]
-
+        elif data.shape[0] >= 17 and data.shape[1] > data.shape[0]:
+            eeg = data[3:17]
         else:
-            raise ValueError(
-                f"Unexpected attention matrix shape in "
-                f"{path}: {data.shape}"
-            )
-
+            raise ValueError(f"Unexpected Attention matrix shape in {path}: {data.shape}")
         if eeg.shape[0] != 14:
-            raise ValueError(
-                "Attention EEG extraction did not produce "
-                f"14 channels for {path}: {eeg.shape}"
-            )
-
-        if not np.isfinite(eeg).all():
-            raise ValueError(
-                "Attention recording contains NaN or "
-                f"infinity: {path}"
-            )
-
-        return np.asarray(
-            eeg,
-            dtype=np.float64,
-        )
+            raise ValueError(f"Attention extraction did not produce 14 channels: {path}")
+        return np.asarray(eeg, dtype=np.float64)
 
     @staticmethod
-    def _natural_path_key(
-        path: Path,
-    ) -> tuple[object, ...]:
-        return tuple(
-            int(piece)
-            if piece.isdigit()
-            else piece.lower()
-            for piece in re.split(
-                r"(\d+)",
-                path.name,
-            )
-        )
+    def _save(path: Path, data: SignalDataset) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(path, signals=data.signals, labels=data.labels, groups=data.groups)
 
     @staticmethod
-    def _save(
-        path: Path,
-        data: SignalDataset,
-    ) -> None:
-        path.parent.mkdir(
-            parents=True,
-            exist_ok=True,
-        )
-
-        np.savez_compressed(
-            path,
-            signals=data.signals,
-            labels=data.labels,
-            groups=data.groups,
-        )
-
-    def _load(
-        self,
-        path: Path,
-        quick: bool,
-    ) -> SignalDataset:
-        with np.load(
-            path,
-            allow_pickle=False,
-        ) as saved:
-            data = SignalDataset(
-                saved["signals"],
-                saved["labels"],
-                FS,
-                (
-                    "focused",
-                    "unfocused",
-                    "drowsy",
-                ),
-                "accuracy",
+    def _load(path: Path) -> SignalDataset:
+        with np.load(path, allow_pickle=False) as saved:
+            return SignalDataset(
+                saved["signals"], saved["labels"], FS,
+                ("focused", "unfocused", "drowsy"), "accuracy",
                 groups=saved["groups"],
             )
-
-        return (
-            self._quick(data)
-            if quick
-            else data
-        )
-
-    @staticmethod
-    def _quick(
-        data: SignalDataset,
-    ) -> SignalDataset:
-        indices = np.concatenate(
-            [
-                np.flatnonzero(
-                    data.labels == label
-                )[:64]
-                for label in (0, 1, 2)
-            ]
-        )
-
-        return SignalDataset(
-            data.signals[indices],
-            data.labels[indices],
-            FS,
-            data.class_names,
-            data.primary_metric,
-            groups=data.groups[indices],
-        )
 
 
 TASK = AttentionStateTask()

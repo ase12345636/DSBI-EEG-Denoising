@@ -1,8 +1,8 @@
-"""Shared logistic-regression classifier."""
+"""Logistic regression; cuML for the author-provided BCI task."""
 
 from sklearn.linear_model import LogisticRegression
 
-from classifier.common import sklearn_prediction
+from classifier.common import fit_cuml_classifier, sklearn_prediction
 
 
 class LogisticRegressionClassifier:
@@ -10,7 +10,14 @@ class LogisticRegressionClassifier:
     expects_features = True
     requires_standardization = True
 
-    def fit_predict(self, x_train, y_train, x_test, seed: int, **_):
+    def fit_predict(self, x_train, y_train, x_test, seed: int, task_name=None, **_):
+        if task_name == "bci_errp":
+            try:
+                from cuml.linear_model import LogisticRegression as cuLR
+            except ImportError as exc:
+                raise RuntimeError("cuML is required for the BCI reproduction") from exc
+            return fit_cuml_classifier(cuLR(), x_train, y_train, x_test)
+
         model = LogisticRegression(random_state=seed, max_iter=1000)
         model.fit(x_train, y_train)
         return sklearn_prediction(model, x_test)

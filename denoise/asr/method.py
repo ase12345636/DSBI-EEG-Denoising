@@ -1,4 +1,4 @@
-"""Artifact Subspace Reconstruction with cutoff 5."""
+"""Artifact Subspace Reconstruction used by the report (cutoff k=5)."""
 
 from __future__ import annotations
 
@@ -12,39 +12,31 @@ class ASRDenoiser:
     cutoff = 5
 
     @staticmethod
-    def _functions():
+    def _asr_functions():
         try:
             from asrpy import asr_calibrate, asr_process
         except ImportError as exc:
-            raise RuntimeError("ASR needs asrpy; install requirements.txt") from exc
+            raise RuntimeError("ASR requires asrpy") from exc
         return asr_calibrate, asr_process
 
     def transform_recording(self, signal: np.ndarray, sampling_rate: float) -> np.ndarray:
-        asr_calibrate, asr_process = self._functions()
-        matrix, threshold = asr_calibrate(signal, sampling_rate, cutoff=self.cutoff)
-        return np.asarray(asr_process(signal, sampling_rate, matrix, threshold))
+        """Calibrate and process one recording/epoch exactly as in the source code."""
+        calibrate, process = self._asr_functions()
+        signal = np.asarray(signal, dtype=np.float64)
+        matrix, threshold = calibrate(signal, sampling_rate, cutoff=self.cutoff)
+        return np.asarray(process(signal, sampling_rate, matrix, threshold))
 
-    def transform(
-        self,
-        signals: np.ndarray,
-        sampling_rate: float,
-        task_name: str | None = None,
-        **_: object,
-    ) -> np.ndarray:
-        # BCI epochs are filtered to 1--40 Hz before ASR.
-        if task_name == "bci_errp":
-            from denoise.bandpass.method import butter_bandpass_filter
-
-            signals = butter_bandpass_filter(signals, sampling_rate, highcut=40.0)
-        output = np.empty_like(signals, dtype=np.float64)
-        epochs = progress(
+    def transform(self, signals: np.ndarray, sampling_rate: float, task_name=None, **_) -> np.ndarray:
+        """Apply ASR independently to each supplied epoch."""
+        signals = np.asarray(signals, dtype=np.float64)
+        output = np.empty_like(signals)
+        for index, epoch in progress(
             enumerate(signals),
             total=len(signals),
             desc=f"ASR {task_name or 'EEG'}",
             unit="epoch",
             leave=False,
-        )
-        for index, epoch in epochs:
+        ):
             output[index] = self.transform_recording(epoch, sampling_rate)
         return output
 

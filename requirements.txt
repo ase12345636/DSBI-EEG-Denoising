@@ -1,14 +1,16 @@
 # EEG experiment environment
-# Target: Linux x86_64, Python 3.10, NVIDIA GPU
-# Install with:
+# Target: Linux x86_64, Python 3.10, NVIDIA GPU, CUDA 12.6
+# Install in a NEW virtual/Conda environment with:
 #   python -m pip install -r requirements.txt
 #
-# PyTorch and TensorFlow intentionally share one pinned CUDA 12.6 / cuDNN 9.5 stack.
-# Use this file in a NEW virtual/Conda environment; requirements.txt cannot remove
-# unrelated or conflicting packages left in an existing environment.
+# BCI classical ML follows the author source and uses RAPIDS cuML/cuDF.
+# RAPIDS 25.08 is pinned because it is contemporaneous with the provided
+# BCI source (Aug 2025), supports Python 3.10 and CUDA 12.x, and accepts the
+# NumPy / SciPy / scikit-learn versions used by this reproduction.
 
 --index-url https://pypi.org/simple
 --extra-index-url https://download.pytorch.org/whl/cu126
+--extra-index-url https://pypi.nvidia.com
 
 # Core scientific stack
 numpy==1.26.4
@@ -28,12 +30,25 @@ mne==1.8.0
 mne-icalabel==0.7.0
 asrpy==0.0.7
 
+# RAPIDS stack used by the author's BCI ML notebook
+# RAPIDS 25.08 supports CUDA Toolkit 12.0-12.9. Its numba-cuda[cu12]
+# dependency intentionally uses CUDA Python 12.9 bindings for all CUDA 12.x
+# toolkits. This does NOT change the pinned CUDA 12.6 runtime libraries below.
+cuda-python==12.9.1; platform_system == "Linux" and platform_machine == "x86_64"
+numba-cuda[cu12]==0.14.1; platform_system == "Linux" and platform_machine == "x86_64"
+cupy-cuda12x==13.5.1; platform_system == "Linux" and platform_machine == "x86_64"
+cudf-cu12==25.8.0; platform_system == "Linux" and platform_machine == "x86_64"
+cuml-cu12==25.8.0; platform_system == "Linux" and platform_machine == "x86_64"
+
 # GPU frameworks
+# TensorFlow's [and-cuda] extra is intentionally not used here because the
+# CUDA runtime is pinned explicitly below and is shared with PyTorch/RAPIDS.
+# Current RAPIDS documentation does not officially support a pip RAPIDS +
+# TensorFlow pip stack; use this exact file only in a fresh environment.
 torch==2.7.1+cu126
-tensorflow[and-cuda]==2.20.0
+tensorflow==2.20.0
 
 # Shared CUDA 12.6 / cuDNN 9.5 runtime
-# Explicit pins prevent pip from mixing newer CUDA 12.x or cuDNN releases.
 nvidia-cublas-cu12==12.6.4.1; platform_system == "Linux" and platform_machine == "x86_64"
 nvidia-cuda-cupti-cu12==12.6.80; platform_system == "Linux" and platform_machine == "x86_64"
 nvidia-cuda-nvcc-cu12==12.6.85; platform_system == "Linux" and platform_machine == "x86_64"

@@ -139,21 +139,21 @@ class EEGNetModel:
         checkpoint = cache_dir / f"eegnet-v2-{seed}.weights.h5"
         epochs = 2 if quick else int(config.get("epochs", 150))
         patience = 2 if quick else int(config.get("patience", 10))
-        monitor = str(config.get("monitor", "val_loss"))
-        mode = "min" if "loss" in monitor.casefold() else "max"
-
+        # Match DL-classifer.ipynb: checkpoint by val_loss, but early stop by
+        # val_accuracy.  The notebook creates ReduceLROnPlateau but does not
+        # actually pass it to model.fit(), so it is intentionally absent here.
         callbacks = [
             ModelCheckpoint(
                 checkpoint,
                 save_best_only=True,
                 save_weights_only=True,
-                monitor=monitor,
-                mode=mode,
+                monitor="val_loss",
+                mode="min",
                 verbose=0,
             ),
             EarlyStopping(
-                monitor=monitor,
-                mode=mode,
+                monitor="val_accuracy",
+                mode="max",
                 patience=patience,
                 restore_best_weights=True,
                 verbose=0,
