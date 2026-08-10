@@ -15,8 +15,7 @@ class SVMClassifier:
             raise RuntimeError("cuML is required for SVM") from exc
         model = cuSVC(
             kernel="linear",
-            probability=False,
-            decision_function_shape="ovr",
+            probability=True,
         )
         return fit_cuml_classifier(
             model,
