@@ -3,15 +3,11 @@
 from __future__ import annotations
 
 import gc
-import hashlib
 import json
 import os
-import platform
 import random
 import sys
 import time
-from datetime import datetime, timezone
-from importlib import metadata as importlib_metadata
 from pathlib import Path
 
 os.environ.setdefault("TF_FORCE_GPU_ALLOW_GROWTH", "true")
@@ -62,7 +58,6 @@ _RESULT_COLUMNS = (
     "recall",
     "auc",
 )
-
 
 def _set_seed(seed: int) -> None:
     """Set Python, NumPy, TensorFlow, and PyTorch random states."""
@@ -119,7 +114,7 @@ class ReproductionPipeline:
         print(f"Tasks: {', '.join(task_names)}")
         print(f"Denoising: {', '.join(method_names)}")
         print(f"Classifiers: {', '.join(classifier_names)}")
-        print("Mode: leakage-free")
+        print("Mode: report reproduction + ICA")
 
         output_dir = (
             self.config.output_dir / "quick_smoke"
@@ -179,13 +174,9 @@ class ReproductionPipeline:
 
         repeats = 1 if quick else self.config.repeats
 
-        # Use the current Unix timestamp once as the master seed, then derive
-        # one independent seed per repeat. All methods/classifiers in the same
-        # repeat reuse the same seed so their data split and stochastic state
-        # are directly comparable. For normal runs, persist the master seed so
-        # an interrupted run can resume with exactly the same repeat seeds.
         seed_plan_path = output_dir / "repeat_seed_plan.json"
-        if not quick and seed_plan_path.exists():
+        seed_plan_existed = seed_plan_path.exists()
+        if seed_plan_existed:
             try:
                 seed_plan = json.loads(seed_plan_path.read_text(encoding="utf-8"))
                 master_seed = int(seed_plan["master_seed"])
@@ -205,21 +196,22 @@ class ReproductionPipeline:
             size=repeats,
             dtype=np.int64,
         ).tolist()
-
-        if not quick:
-            seed_plan_path.write_text(
-                json.dumps(
-                    {
-                        "master_seed": master_seed,
-                        "repeat_seeds": repeat_seeds,
-                    },
-                    indent=2,
-                )
-                + "\n",
-                encoding="utf-8",
+        seed_plan_path.write_text(
+            json.dumps(
+                {
+                    "master_seed": master_seed,
+                    "repeat_seeds": repeat_seeds,
+                },
+                indent=2,
             )
+            + "\n",
+            encoding="utf-8",
+        )
         print(f"[seed] repeat seeds: {repeat_seeds}")
-        if quick:
+
+        if quick or not seed_plan_existed:
+            # A result CSV without its seed plan cannot be resumed safely,
+            # because the original time-derived repeat seeds are unknown.
             existing_frame = pd.DataFrame(columns=_RESULT_COLUMNS)
             existing_source = None
         else:
@@ -315,6 +307,18 @@ class ReproductionPipeline:
                         load_classifier(name).expects_features
                         for name in pending_classifier_names
                     )
+                    fixed_feature_pair = None
+                    if task.feature_kind == "xdawn_tangent" and needs_features:
+                        fixed_train_index, fixed_test_index = task.split(
+                            data, repeat_seeds[0]
+                        )
+                        fixed_feature_pair = task.features(
+                            data.signals[fixed_train_index],
+                            data.signals[fixed_test_index],
+                            data.labels[fixed_train_index],
+                            data.labels[fixed_test_index],
+                        )
+
                     full_stft = None
                     if task.feature_kind == "stft_mean_power" and needs_features:
                         feature_cache = self._stft_cache_path(task, method_name)
@@ -368,46 +372,28 @@ class ReproductionPipeline:
                             for name in pending_classifiers
                         )
                         if repeat_needs_features:
-                            if full_stft is not None:
+                            if fixed_feature_pair is not None:
+                                feature_pair = fixed_feature_pair
+                            elif full_stft is not None:
                                 feature_pair = (
                                     np.asarray(full_stft[train_index]),
                                     np.asarray(full_stft[test_index]),
                                 )
                             else:
-                                method_feature_builder = getattr(
-                                    task, "features_for_method", None
+                                feature_pair = task.features(
+                                    train_signal,
+                                    test_signal,
+                                    y_train,
+                                    y_test,
                                 )
-                                if (
-                                    method_name == "ica"
-                                    and method_feature_builder is not None
-                                ):
-                                    feature_pair = method_feature_builder(
-                                        method_name,
-                                        train_signal,
-                                        test_signal,
-                                        y_train,
-                                        y_test,
-                                    )
-                                else:
-                                    feature_pair = task.features(
-                                        train_signal,
-                                        test_signal,
-                                        y_train,
-                                        y_test,
-                                    )
 
-                            # Apply a task-defined unit/representation transform
-                            # once to the shared feature pair before balancing or
-                            # classifier-specific standardization.  For Seizure
-                            # Detection this converts STFT power from V^2 to
-                            # microvolt^2 for every classical classifier.
-                            feature_transform = getattr(
-                                task, "transform_feature_matrix", None
+                            feature_scale = float(
+                                getattr(task, "feature_power_scale", 1.0)
                             )
-                            if feature_transform is not None:
+                            if feature_scale != 1.0:
                                 feature_pair = (
-                                    feature_transform(feature_pair[0]),
-                                    feature_transform(feature_pair[1]),
+                                    feature_pair[0] * feature_scale,
+                                    feature_pair[1] * feature_scale,
                                 )
 
                             balanced_x, balanced_y = task.balance_features(
@@ -453,6 +439,7 @@ class ReproductionPipeline:
                                     config=self.config.eegnet,
                                     quick=quick,
                                     validation_size=task.validation_size,
+                                    task_name=task_name,
                                 )
                                 prediction_labels = self._copy_to_cpu(prediction.labels)
                                 prediction_scores = self._copy_to_cpu(prediction.scores)
@@ -493,6 +480,7 @@ class ReproductionPipeline:
                             checkpoint_results(rows, output_dir)
                             experiment_bar.update()
 
+                    fixed_feature_pair = None
                     full_stft = None
                     data = None
                     self._cleanup_accelerators()
@@ -500,26 +488,15 @@ class ReproductionPipeline:
         result_frame = self._normalise_result_frame(pd.DataFrame(rows))
         checkpoint_results(result_frame.to_dict(orient="records"), output_dir)
         manifest = {
-            "created_utc": datetime.now(timezone.utc).isoformat(),
             "pipeline_version": self.config.pipeline_version,
-            "python": sys.version,
-            "platform": platform.platform(),
-            "packages": self._package_versions(),
-            "tasks": sorted(result_frame["task"].unique().tolist()),
-            "methods": sorted(result_frame["method"].unique().tolist()),
-            "classifiers": sorted(result_frame["classifier"].unique().tolist()),
+            "tasks": list(task_names),
+            "methods": list(method_names),
+            "classifiers": list(classifier_names),
             "repeats": repeats,
             "master_seed": master_seed,
             "repeat_seeds": repeat_seeds,
-            "quick": quick,
-            "resumed": existing_source is not None,
-            "resumed_from": (
-                str(existing_source) if existing_source is not None else None
-            ),
-            "total_result_rows": len(result_frame),
             "stft": self.config.stft,
             "eegnet": self.config.eegnet,
-            "ic_unet": self.config.ic_unet,
             "ica": self.config.ica,
         }
         progress_write(
@@ -530,27 +507,16 @@ class ReproductionPipeline:
         print(f"Finished. Results and figures: {output_dir}")
         return 0
 
-    def _prepare_output_directory(self, output_dir: Path) -> None:
-        """Keep existing run-level CSV files so interrupted runs can resume.
-
-        Completion is determined only from the run keys in
-        all_runs.partial.csv or all_runs.csv.  Never rename, delete, or reset
-        the output directory automatically.
-        """
+    @staticmethod
+    def _prepare_output_directory(output_dir: Path) -> None:
         output_dir.mkdir(parents=True, exist_ok=True)
-        # This file belonged to an older implementation and is no longer used.
-        # Removing it must not affect existing CSV checkpoints.
-        (output_dir / ".pipeline_signature.json").unlink(missing_ok=True)
 
     def _stft_cache_path(self, task, method_name: str) -> Path:
-        stft_digest = hashlib.sha256(
-            json.dumps(self.config.stft, sort_keys=True).encode()
-        ).hexdigest()[:12]
         cache_version = getattr(task, "cache_version", task.name)
         return (
             self.config.cache_dir
             / task.name
-            / f"{cache_version}-{method_name}-{STFT_CACHE_VERSION}-{stft_digest}.npy"
+            / f"{cache_version}-{method_name}-{STFT_CACHE_VERSION}.npy"
         )
 
     @staticmethod
@@ -572,7 +538,6 @@ class ReproductionPipeline:
     def _normalise_result_frame(frame: pd.DataFrame) -> pd.DataFrame:
         if frame.empty:
             return pd.DataFrame(columns=_RESULT_COLUMNS)
-        frame = frame.copy()
         missing = set(_RESULT_COLUMNS) - set(frame.columns)
         if missing:
             raise ValueError(
@@ -601,9 +566,7 @@ class ReproductionPipeline:
         ).reset_index(drop=True)
 
     @staticmethod
-    def _result_keys(
-        frame: pd.DataFrame,
-    ) -> set[tuple[str, str, str, int, int]]:
+    def _result_keys(frame: pd.DataFrame) -> set[tuple[str, str, str, int, int]]:
         if frame.empty:
             return set()
         frame = ReproductionPipeline._normalise_result_frame(frame)
@@ -657,13 +620,11 @@ class ReproductionPipeline:
             score_array = np.asarray(scores)
             if score_array.ndim != 2 or score_array.shape[1] != class_count:
                 raise ValueError("Multiclass AUC needs one score column per class")
-            auc = roc_auc_score(
-                y_true,
-                score_array,
-                multi_class="ovr",
-                average="macro",
-                labels=np.arange(class_count),
-            )
+            auc = float(np.mean([
+                roc_auc_score((np.asarray(y_true) == class_index).astype(int),
+                              score_array[:, class_index])
+                for class_index in range(class_count)
+            ]))
         return {
             "accuracy": accuracy_score(y_true, y_pred),
             "balanced_accuracy": balanced_accuracy_score(y_true, y_pred),
@@ -675,30 +636,6 @@ class ReproductionPipeline:
             ),
             "auc": float(auc),
         }
-
-    @staticmethod
-    def _package_versions() -> dict[str, str]:
-        packages = (
-            "numpy",
-            "scipy",
-            "pandas",
-            "scikit-learn",
-            "imbalanced-learn",
-            "pyriemann",
-            "lightgbm",
-            "tensorflow",
-            "torch",
-            "mne",
-            "asrpy",
-            "mne-icalabel",
-        )
-        versions: dict[str, str] = {}
-        for package in packages:
-            try:
-                versions[package] = importlib_metadata.version(package)
-            except importlib_metadata.PackageNotFoundError:
-                versions[package] = "not-installed"
-        return versions
 
     @staticmethod
     def _validate(tasks, methods, classifiers) -> None:

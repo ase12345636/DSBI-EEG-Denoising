@@ -1,8 +1,6 @@
-"""Linear probability SVM; cuML for the author-provided BCI task."""
+"""Linear GPU SVM using RAPIDS cuML for all downstream tasks."""
 
-from sklearn.svm import SVC
-
-from classifier.common import fit_cuml_classifier, sklearn_prediction
+from classifier.common import fit_cuml_classifier
 
 
 class SVMClassifier:
@@ -10,16 +8,23 @@ class SVMClassifier:
     expects_features = True
     requires_standardization = True
 
-    def fit_predict(self, x_train, y_train, x_test, seed: int, task_name=None, **_):
+    def fit_predict(self, x_train, y_train, x_test, seed: int, **_):
         try:
             from cuml.svm import SVC as cuSVC
         except ImportError as exc:
-            raise RuntimeError("cuML is required.") from exc
+            raise RuntimeError("cuML is required for SVM") from exc
+        model = cuSVC(
+            kernel="linear",
+            probability=False,
+            decision_function_shape="ovr",
+        )
         return fit_cuml_classifier(
-            cuSVC(kernel="linear", probability=True),
+            model,
             x_train,
             y_train,
             x_test,
+            score_method="decision_function",
         )
+
 
 CLASSIFIER = SVMClassifier()

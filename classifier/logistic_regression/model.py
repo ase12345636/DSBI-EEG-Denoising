@@ -1,8 +1,6 @@
-"""Logistic regression; cuML for the author-provided BCI task."""
+"""GPU logistic regression using RAPIDS cuML for all downstream tasks."""
 
-from sklearn.linear_model import LogisticRegression
-
-from classifier.common import fit_cuml_classifier, sklearn_prediction
+from classifier.common import fit_cuml_classifier
 
 
 class LogisticRegressionClassifier:
@@ -10,11 +8,12 @@ class LogisticRegressionClassifier:
     expects_features = True
     requires_standardization = True
 
-    def fit_predict(self, x_train, y_train, x_test, seed: int, task_name=None, **_):
+    def fit_predict(self, x_train, y_train, x_test, seed: int, **_):
         try:
             from cuml.linear_model import LogisticRegression as cuLR
         except ImportError as exc:
-            raise RuntimeError("cuML is required.") from exc
+            raise RuntimeError("cuML is required for logistic regression") from exc
+
         return fit_cuml_classifier(cuLR(), x_train, y_train, x_test)
 
 
