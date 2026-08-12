@@ -16,6 +16,7 @@ class SignalDataset:
     primary_metric: str
     fixed_train: np.ndarray | None = None
     groups: np.ndarray | None = None
+    sample_ids: np.ndarray | None = None
 
     def validate(self) -> None:
         if self.signals.ndim != 3:

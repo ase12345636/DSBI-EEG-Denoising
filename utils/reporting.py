@@ -1,4 +1,4 @@
-"""CSV tables, Mann--Whitney tests, and report-style figures."""
+"""CSV tables, paired Wilcoxon tests, and report-style figures."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 import pandas as pd
-from scipy.stats import mannwhitneyu
+from scipy.stats import wilcoxon
 
 
 FIGURE_NUMBERS = {
@@ -21,7 +21,8 @@ TABLE_NUMBERS = {
 }
 METHOD_ORDER = ("raw", "bandpass", "ica", "asr", "ic_unet")
 CLASSIFIER_ORDER = (
-    "logistic_regression", "svm", "random_forest", "lightgbm", "mlp", "eegnet"
+    "logistic_regression", "svm", "random_forest", "lightgbm", "mlp", "eegnet",
+    "vit", "mobilenet",
 )
 DISPLAY_METHOD = {
     "raw": "Raw", "bandpass": "Filter (1–50 Hz)", "asr": "ASR",
@@ -30,6 +31,7 @@ DISPLAY_METHOD = {
 DISPLAY_CLASSIFIER = {
     "logistic_regression": "LR", "svm": "SVM", "random_forest": "RF",
     "lightgbm": "LightGBM", "mlp": "MLP", "eegnet": "EEGNet",
+    "vit": "ViT", "mobilenet": "MobileNet",
 }
 METHOD_COLORS = {
     "Raw": "#ff9999", "Filter (1–50 Hz)": "#8fc5f4",
@@ -57,8 +59,11 @@ def write_outputs(results: pd.DataFrame, output_dir: Path, manifest: dict) -> No
         recall_mean=("recall", "mean"),
     )
     summary.to_csv(output_dir / "summary.csv", index=False)
-    tests = _mann_whitney(results)
-    tests.to_csv(output_dir / "mann_whitney_vs_raw.csv", index=False)
+    one_sided = _wilcoxon_vs_raw(results, alternative="less")
+    one_sided.to_csv(output_dir / "wilcoxon_one_sided_vs_raw.csv", index=False)
+    two_sided = _wilcoxon_vs_raw(results, alternative="two-sided")
+    two_sided.to_csv(output_dir / "wilcoxon_two_sided_vs_raw.csv", index=False)
+    (output_dir / "mann_whitney_vs_raw.csv").unlink(missing_ok=True)
     for task_name in results["task"].unique():
         task_dir = output_dir / task_name
         task_dir.mkdir(parents=True, exist_ok=True)
@@ -74,29 +79,74 @@ def checkpoint_results(rows: list[dict], output_dir: Path) -> None:
     pd.DataFrame(rows).to_csv(output_dir / "all_runs.partial.csv", index=False)
 
 
-def _mann_whitney(results: pd.DataFrame) -> pd.DataFrame:
-    """Match the report: compare classifier means for each denoising method."""
+def _wilcoxon_vs_raw(results: pd.DataFrame, alternative: str) -> pd.DataFrame:
+    """Compare paired classifier means and apply Holm within each task/metric."""
     classifier_means = results.groupby(
         ["task", "method", "classifier"], as_index=False
     )[["primary", "auc"]].mean()
     rows: list[dict] = []
     for task, group in classifier_means.groupby("task"):
-        raw = group[group["method"] == "raw"]
-        for method in _method_names(group):
-            if method == "raw":
-                continue
-            denoised = group[group["method"] == method]
-            if raw.empty or denoised.empty:
-                continue
-            for metric in ("primary", "auc"):
-                statistic, p_value = mannwhitneyu(
-                    denoised[metric], raw[metric], alternative="less", method="auto"
-                )
-                rows.append({"task": task, "method": method,
-                    "metric": metric, "alternative": "denoised < raw",
-                    "n_classifiers": len(denoised),
-                    "u_statistic": statistic, "p_value": p_value})
-    return pd.DataFrame(rows)
+        for metric in ("primary", "auc"):
+            for row in _paired_method_tests(group, metric, alternative):
+                rows.append({"task": task, **row})
+    return pd.DataFrame(rows, columns=(
+        "task", "method", "metric", "alternative", "n_classifiers",
+        "w_statistic", "mean_difference", "p_value",
+        "holm_adjusted_p_value", "significant_0_05",
+    ))
+
+
+def _paired_method_tests(data: pd.DataFrame, metric: str,
+                         alternative: str) -> list[dict]:
+    raw = data[data["method"] == "raw"][["classifier", metric]]
+    rows = []
+    for method in (name for name in _method_names(data) if name != "raw"):
+        denoised = data[data["method"] == method][["classifier", metric]]
+        paired = raw.merge(
+            denoised, on="classifier", suffixes=("_raw", "_denoised")
+        ).dropna()
+        if paired.empty:
+            continue
+        raw_values = paired[f"{metric}_raw"]
+        denoised_values = paired[f"{metric}_denoised"]
+        differences = denoised_values.to_numpy() - raw_values.to_numpy()
+        if (differences == 0).all():
+            statistic, p_value = 0.0, 1.0
+        else:
+            statistic, p_value = wilcoxon(
+                denoised_values,
+                raw_values,
+                alternative=alternative,
+                method="auto",
+            )
+        rows.append({
+            "method": method,
+            "metric": metric,
+            "alternative": (
+                "denoised < raw" if alternative == "less" else "denoised != raw"
+            ),
+            "n_classifiers": len(paired),
+            "w_statistic": float(statistic),
+            "mean_difference": float(differences.mean()),
+            "p_value": float(p_value),
+        })
+
+    adjusted = _holm_adjust([row["p_value"] for row in rows])
+    for row, adjusted_p in zip(rows, adjusted):
+        row["holm_adjusted_p_value"] = adjusted_p
+        row["significant_0_05"] = adjusted_p < 0.05
+    return rows
+
+
+def _holm_adjust(p_values: list[float]) -> list[float]:
+    """Return Holm-adjusted p-values in the original comparison order."""
+    order = sorted(range(len(p_values)), key=p_values.__getitem__)
+    adjusted = [1.0] * len(p_values)
+    running_max = 0.0
+    for rank, index in enumerate(order):
+        running_max = max(running_max, (len(p_values) - rank) * p_values[index])
+        adjusted[index] = min(1.0, running_max)
+    return adjusted
 
 
 def _write_tables(summary: pd.DataFrame, task_dir: Path, task_name: str) -> None:
@@ -220,20 +270,23 @@ def _write_figures(results: pd.DataFrame, task_dir: Path, task_name: str) -> Non
 
 def _add_significance(axis, data: pd.DataFrame, metric: str,
                       method_names: list[str], method_order: list[str]) -> None:
-    raw = data[data["method"] == "raw"][metric]
     values = data[metric]
     span = max(float(values.max() - values.min()), 0.05)
     lower = max(0.0, float(values.min()) - 0.12 * span)
     step = 0.13 * span
     top = float(values.max()) + step * max(len(method_names), 2)
     axis.set_ylim(lower, top + step)
-    if raw.empty:
+    tests = {
+        row["method"]: row for row in _paired_method_tests(
+            data, metric, alternative="less"
+        )
+    }
+    if not tests:
         return
     for level, method in enumerate((name for name in method_names if name != "raw"), start=1):
-        compared = data[data["method"] == method][metric]
-        if compared.empty:
+        if method not in tests:
             continue
-        _, p_value = mannwhitneyu(compared, raw, alternative="less", method="auto")
+        p_value = tests[method]["holm_adjusted_p_value"]
         label = "**" if p_value < 0.01 else "*" if p_value < 0.05 else "n.s."
         right = method_order.index(DISPLAY_METHOD.get(method, method))
         y = float(values.max()) + step * level

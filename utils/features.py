@@ -8,16 +8,18 @@ import numpy as np
 from utils.progress import progress
 
 
-STFT_CACHE_VERSION = "stft-report-v1"
-
-
 def stft_mean_power(
     signals: np.ndarray,
     sampling_rate: float,
     config: dict[str, Any] | None = None,
     batch_size: int = 256,
 ) -> np.ndarray:
-    """Per-channel mean STFT power, concatenated across channels."""
+    """Per-channel STFT features using the explicitly configured interpretation.
+
+    The report does not specify every STFT detail. ``mean_power_over_time``
+    records the current interpretation: squared magnitude, averaged over the
+    STFT time-frame axis, retaining one value per frequency bin and channel.
+    """
     from scipy.signal import stft
 
     settings = dict(config or {})

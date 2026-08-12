@@ -21,7 +21,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Download the EEG datasets and run the benchmark. Running without "
-            "arguments executes all 900 model runs."
+            "arguments executes all 1200 model runs."
         )
     )
     parser.add_argument(

@@ -30,13 +30,23 @@ class BCIErrPTask:
                 quick: bool) -> SignalDataset:
         cache = cache_dir / self.name / f"{denoiser.name}.npz"
         if cache.exists() and not quick:
-            return self._load(cache)
+            data = self._load(cache)
+            if data.sample_ids is None:
+                data.sample_ids = self._event_ids(data_dir)
+            data.validate()
+            return data
 
         if denoiser.name == "ica":
             data = self._ica_epochs(data_dir, denoiser, quick)
             if not quick:
                 self._save(cache, data)
                 denoiser.save_reports(cache.with_suffix(".components.json"))
+            return data
+
+        if denoiser.name == "asr":
+            data = self._asr_epochs(data_dir, denoiser, quick)
+            if not quick:
+                self._save(cache, data)
             return data
 
         raw = self._raw_epochs(data_dir, quick)
@@ -51,12 +61,6 @@ class BCIErrPTask:
             baseline_corrected = self._baseline(unbaselined)
             if denoiser.name == "raw":
                 signals = baseline_corrected
-            elif denoiser.name == "asr":
-                # The source notebook calibrates ASR independently on each
-                # baseline-corrected 700-ms epoch with cutoff k=5.
-                signals = denoiser.transform(
-                    baseline_corrected, FS, task_name=self.name
-                )
             elif denoiser.name == "ic_unet":
                 if checkpoint_path is None:
                     raise ValueError("IC-U-Net checkpoint path is required")
@@ -76,6 +80,7 @@ class BCIErrPTask:
             class_names=("bad_feedback", "good_feedback"),
             primary_metric="balanced_accuracy",
             fixed_train=raw.fixed_train,
+            sample_ids=raw.sample_ids,
         )
         data.validate()
         if not quick:
@@ -120,7 +125,7 @@ class BCIErrPTask:
 
         train_labels = self._label_map(data_dir, "TrainLabels.csv")
         test_labels = self._test_label_map(data_dir)
-        epochs, labels, train_mask = [], [], []
+        epochs, labels, train_mask, sample_ids = [], [], [], []
 
         for path in progress(files, total=len(files), desc="BCI epoching", unit="file", leave=False):
             subject = self._subject(path)
@@ -139,6 +144,7 @@ class BCIErrPTask:
                 epochs.append(epoch)
                 labels.append(label_map[event_id])
                 train_mask.append(is_train)
+                sample_ids.append(event_id)
 
         return SignalDataset(
             np.stack(epochs),
@@ -147,6 +153,7 @@ class BCIErrPTask:
             ("bad_feedback", "good_feedback"),
             "balanced_accuracy",
             fixed_train=np.asarray(train_mask, dtype=bool),
+            sample_ids=np.asarray(sample_ids),
         )
 
     def _ica_epochs(self, data_dir: Path, denoiser, quick: bool) -> SignalDataset:
@@ -161,7 +168,7 @@ class BCIErrPTask:
 
         train_labels = self._label_map(data_dir, "TrainLabels.csv")
         test_labels = self._test_label_map(data_dir)
-        epochs, labels, train_mask = [], [], []
+        epochs, labels, train_mask, sample_ids = [], [], [], []
 
         for path in progress(files, total=len(files), desc="BCI ICA", unit="file", leave=False):
             subject = self._subject(path)
@@ -189,6 +196,7 @@ class BCIErrPTask:
                 epochs.append(epoch)
                 labels.append(label_map[event_id])
                 train_mask.append(is_train)
+                sample_ids.append(event_id)
 
         return SignalDataset(
             np.stack(epochs).astype(np.float32),
@@ -197,7 +205,64 @@ class BCIErrPTask:
             ("bad_feedback", "good_feedback"),
             "balanced_accuracy",
             fixed_train=np.asarray(train_mask, dtype=bool),
+            sample_ids=np.asarray(sample_ids),
         )
+
+    def _asr_epochs(self, data_dir: Path, denoiser, quick: bool) -> SignalDataset:
+        """Apply ASR to each continuous session before event epoching."""
+        files = sorted(data_dir.rglob("Data_S*_Sess*.csv"))
+        if not files:
+            raise FileNotFoundError(f"No BCI session CSV files found below {data_dir}")
+        if quick:
+            train_file = next(p for p in files if self._subject(p) not in TEST_SUBJECTS)
+            test_file = next(p for p in files if self._subject(p) in TEST_SUBJECTS)
+            files = [train_file, test_file]
+
+        train_labels = self._label_map(data_dir, "TrainLabels.csv")
+        test_labels = self._test_label_map(data_dir)
+        epochs, labels, train_mask, sample_ids = [], [], [], []
+
+        for path in progress(files, total=len(files), desc="BCI ASR", unit="file", leave=False):
+            subject = self._subject(path)
+            is_train = subject not in TEST_SUBJECTS
+            frame = pd.read_csv(path, usecols=[*CHANNELS, "FeedBackEvent"])
+            markers = np.flatnonzero(frame["FeedBackEvent"].to_numpy() == 1)
+            eeg = frame.loc[:, CHANNELS].to_numpy(dtype=np.float64).T
+            cleaned = denoiser.transform_recording(eeg, FS)
+            label_map = train_labels if is_train else test_labels
+            prefix = path.stem.removeprefix("Data_")
+
+            for event_number, marker in enumerate(markers, start=1):
+                epoch = cleaned[:, marker - 20 : marker + 120]
+                if epoch.shape[-1] != 140:
+                    continue
+                epoch = epoch - np.mean(epoch[:, :20], axis=1, keepdims=True)
+                event_id = f"{prefix}_FB{event_number:03d}"
+                epochs.append(epoch)
+                labels.append(label_map[event_id])
+                train_mask.append(is_train)
+                sample_ids.append(event_id)
+
+        return SignalDataset(
+            np.stack(epochs).astype(np.float32),
+            np.asarray(labels, dtype=np.int8),
+            FS,
+            ("bad_feedback", "good_feedback"),
+            "balanced_accuracy",
+            fixed_train=np.asarray(train_mask, dtype=bool),
+            sample_ids=np.asarray(sample_ids),
+        )
+
+    def _event_ids(self, data_dir: Path) -> np.ndarray:
+        """Reconstruct IDs for caches created before sample manifests existed.
+
+        Both official label tables contain exactly the retained event IDs. Their
+        lexical order is the same session/event order used by ``_raw_epochs``,
+        so migration does not need to reread every large EEG CSV.
+        """
+        train_ids = self._label_map(data_dir, "TrainLabels.csv")
+        test_ids = self._test_label_map(data_dir)
+        return np.asarray(sorted([*train_ids, *test_ids]))
 
     @staticmethod
     def _subject(path: Path) -> int:
@@ -235,6 +300,7 @@ class BCIErrPTask:
             signals=data.signals,
             labels=data.labels,
             fixed_train=data.fixed_train,
+            sample_ids=data.sample_ids,
         )
 
     @staticmethod
@@ -247,6 +313,7 @@ class BCIErrPTask:
                 ("bad_feedback", "good_feedback"),
                 "balanced_accuracy",
                 fixed_train=saved["fixed_train"],
+                sample_ids=saved["sample_ids"] if "sample_ids" in saved.files else None,
             )
 
 

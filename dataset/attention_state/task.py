@@ -30,22 +30,24 @@ class AttentionStateTask:
                 quick: bool) -> SignalDataset:
         cache = cache_dir / self.name / f"{denoiser.name}.npz"
         if cache.exists() and not quick:
-            return self._load(cache)
+            data = self._load(cache)
+            if data.sample_ids is None:
+                data.sample_ids = self._sample_ids(self._selected_files(data_dir))
+            data.validate()
+            return data
 
         files = self._selected_files(data_dir)
         if quick:
             files = files[:1]
 
-        windows, labels, groups = [], [], []
+        windows, labels, groups, sample_ids = [], [], [], []
         for path in progress(files, total=len(files), desc="Attention recordings", unit="file", leave=False):
             signal = self._load_eeg(path)[:, : 3 * STATE_SAMPLES]
             if signal.shape[1] < 3 * STATE_SAMPLES:
                 raise ValueError(f"{path.name} is shorter than 30 minutes")
 
-            # ICA needs the physical continuous scalp signal. It is the only
-            # method run before the report's per-recording Z-score step.
             if denoiser.name == "ica":
-                signal = denoiser.transform_recording(
+                processed = denoiser.transform_recording(
                     signal,
                     FS,
                     channel_names=ATTENTION_CHANNELS,
@@ -54,11 +56,7 @@ class AttentionStateTask:
                     recording_id=path.stem,
                 )
 
-            mean = signal.mean(axis=1, keepdims=True)
-            std = signal.std(axis=1, keepdims=True)
-            signal = (signal - mean) / np.where(std == 0, 1.0, std)
-
-            if denoiser.name in {"raw", "ica"}:
+            elif denoiser.name == "raw":
                 processed = signal
             elif denoiser.name == "asr":
                 processed = denoiser.transform_recording(signal, FS)
@@ -76,6 +74,13 @@ class AttentionStateTask:
             else:
                 raise ValueError(f"Unsupported Attention denoiser: {denoiser.name}")
 
+            # The report's Z-score is common downstream preprocessing. Apply it
+            # after every denoiser so all methods receive physical EEG units and
+            # every classifier receives identically standardized recordings.
+            mean = processed.mean(axis=1, keepdims=True)
+            std = processed.std(axis=1, keepdims=True)
+            processed = (processed - mean) / np.where(std == 0, 1.0, std)
+
             for label in range(3):
                 state = processed[:, label * STATE_SAMPLES : (label + 1) * STATE_SAMPLES]
                 for start in range(0, STATE_SAMPLES, WINDOW):
@@ -84,6 +89,7 @@ class AttentionStateTask:
                         windows.append(window.astype(np.float32, copy=False))
                         labels.append(label)
                         groups.append(path.stem)
+                        sample_ids.append(f"{path.stem}:{label}:{start}")
 
         data = SignalDataset(
             np.stack(windows),
@@ -92,6 +98,7 @@ class AttentionStateTask:
             ("focused", "unfocused", "drowsy"),
             "accuracy",
             groups=np.asarray(groups),
+            sample_ids=np.asarray(sample_ids),
         )
         data.validate()
         if not quick:
@@ -132,6 +139,15 @@ class AttentionStateTask:
         return [by_name[name] for name in selection]
 
     @staticmethod
+    def _sample_ids(files: list[Path]) -> np.ndarray:
+        return np.asarray([
+            f"{path.stem}:{label}:{start}"
+            for path in files
+            for label in range(3)
+            for start in range(0, STATE_SAMPLES, WINDOW)
+        ])
+
+    @staticmethod
     def _load_eeg(path: Path) -> np.ndarray:
         from scipy.io import loadmat
 
@@ -166,7 +182,13 @@ class AttentionStateTask:
     @staticmethod
     def _save(path: Path, data: SignalDataset) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(path, signals=data.signals, labels=data.labels, groups=data.groups)
+        np.savez_compressed(
+            path,
+            signals=data.signals,
+            labels=data.labels,
+            groups=data.groups,
+            sample_ids=data.sample_ids,
+        )
 
     @staticmethod
     def _load(path: Path) -> SignalDataset:
@@ -175,6 +197,7 @@ class AttentionStateTask:
                 saved["signals"], saved["labels"], FS,
                 ("focused", "unfocused", "drowsy"), "accuracy",
                 groups=saved["groups"],
+                sample_ids=saved["sample_ids"] if "sample_ids" in saved.files else None,
             )
 
 

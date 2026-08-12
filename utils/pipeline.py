@@ -30,7 +30,7 @@ from utils.downloader import (
     resolve_dataset_path,
     sources,
 )
-from utils.features import STFT_CACHE_VERSION, stft_mean_power
+from utils.features import stft_mean_power
 from utils.progress import progress, progress_write
 from utils.registry import (
     CLASSIFIER_MODULES,
@@ -110,7 +110,6 @@ class ReproductionPipeline:
 
         self._validate(task_names, method_names, classifier_names)
 
-        print(f"Pipeline: {self.config.pipeline_version}")
         print(f"Tasks: {', '.join(task_names)}")
         print(f"Denoising: {', '.join(method_names)}")
         print(f"Classifiers: {', '.join(classifier_names)}")
@@ -263,6 +262,8 @@ class ReproductionPipeline:
         ) as experiment_bar:
             for task_name in task_names:
                 task = load_task(task_name)
+                if hasattr(task, "selection_seed"):
+                    task.selection_seed = master_seed
 
                 for method_name in method_names:
                     prepare_bar.set_postfix_str(
@@ -288,7 +289,12 @@ class ReproductionPipeline:
 
                     denoiser = load_denoiser(method_name)
                     if hasattr(denoiser, "configure"):
-                        denoiser.configure(self.config.ica)
+                        method_settings = dict(self.config.calibration)
+                        if method_name == "asr":
+                            method_settings.update(self.config.asr)
+                        elif method_name == "ica":
+                            method_settings.update(self.config.ica)
+                        denoiser.configure(method_settings)
                     try:
                         data = task.prepare(
                             data_paths[task_name],
@@ -488,7 +494,6 @@ class ReproductionPipeline:
         result_frame = self._normalise_result_frame(pd.DataFrame(rows))
         checkpoint_results(result_frame.to_dict(orient="records"), output_dir)
         manifest = {
-            "pipeline_version": self.config.pipeline_version,
             "tasks": list(task_names),
             "methods": list(method_names),
             "classifiers": list(classifier_names),
@@ -497,7 +502,14 @@ class ReproductionPipeline:
             "repeat_seeds": repeat_seeds,
             "stft": self.config.stft,
             "eegnet": self.config.eegnet,
+            "asr": self.config.asr,
+            "calibration": self.config.calibration,
             "ica": self.config.ica,
+            "statistics": {
+                "primary": "one-sided paired Wilcoxon (denoised < raw)",
+                "supplementary": "two-sided paired Wilcoxon",
+                "correction": "Holm within each task and metric",
+            },
         }
         progress_write(
             "[report] Writing tables and figures from "
@@ -512,11 +524,10 @@ class ReproductionPipeline:
         output_dir.mkdir(parents=True, exist_ok=True)
 
     def _stft_cache_path(self, task, method_name: str) -> Path:
-        cache_version = getattr(task, "cache_version", task.name)
         return (
             self.config.cache_dir
             / task.name
-            / f"{cache_version}-{method_name}-{STFT_CACHE_VERSION}.npy"
+            / f"{method_name}-stft.npy"
         )
 
     @staticmethod

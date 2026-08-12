@@ -1,5 +1,4 @@
 {
-  "pipeline_version": "report-reproduction-plus-ica-cuml-v3",
   "tasks": [
     "bci_errp",
     "seizure_detection",
@@ -18,13 +17,16 @@
     "random_forest",
     "lightgbm",
     "mlp",
-    "eegnet"
+    "eegnet",
+    "vit",
+    "mobilenet"
   ],
   "repeats": 10,
   "base_seed": 0,
   "output_dir": "output",
   "cache_dir": ".cache",
   "stft": {
+    "feature_mode": "mean_power_over_time",
     "window": "hann",
     "nperseg": 256,
     "overlap_fraction": 0.5,
@@ -37,9 +39,15 @@
     "patience": 10,
     "verbose": 0
   },
+  "asr": {
+    "cutoff": 5
+  },
   "ic_unet": {},
+  "calibration": {
+    "max_seconds": 300.0,
+    "block_count": 10
+  },
   "ica": {
-    "random_state": 97,
-    "max_fit_seconds": 300.0
+    "random_state": 97
   }
 }

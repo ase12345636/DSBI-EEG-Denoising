@@ -1,9 +1,9 @@
 """Automatic ICA denoising added to the report reproduction.
 
 ICA is fitted on continuous EEG because a 0.7-s/1-s epoch is not a meaningful
-ICA calibration unit.  The fit uses Extended Infomax, common-average reference,
-a 1-Hz high-pass fitting copy, ICLabel, and a fixed 300-s-equivalent sample
-budget distributed over long recordings.  No task labels are used.
+ICA calibration unit. The fit uses the same explicit label-free calibration
+windows as ASR, plus Extended Infomax, common-average reference, a 1-Hz
+high-pass fitting copy, and ICLabel. No task labels are used.
 """
 
 from __future__ import annotations
@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Sequence
 
 import numpy as np
+
+from utils.calibration import calibration_slices
 
 
 KEEP_LABELS = {"brain", "other"}
@@ -33,12 +35,14 @@ class ICADenoiser:
 
     def __init__(self) -> None:
         self.random_state = 97
-        self.max_fit_seconds = 300.0
+        self.max_calibration_seconds = 300.0
+        self.calibration_block_count = 10
         self._reports: list[dict] = []
 
     def configure(self, settings: dict) -> None:
         self.random_state = int(settings.get("random_state", 97))
-        self.max_fit_seconds = float(settings.get("max_fit_seconds", 300.0))
+        self.max_calibration_seconds = float(settings.get("max_seconds", 300.0))
+        self.calibration_block_count = int(settings.get("block_count", 10))
         self._reports = []
 
     @staticmethod
@@ -65,19 +69,21 @@ class ICADenoiser:
         return [cls.normalise_channel_name(name) for name in names]
 
     def _fit_input(self, filtered_raw):
-        """Use the whole recording up to 300 s; otherwise use 10 uniform blocks."""
+        """Use the calibration ranges shared with ASR."""
         mne, _, _, _ = self._imports()
         sfreq = float(filtered_raw.info["sfreq"])
-        budget = max(2, int(round(self.max_fit_seconds * sfreq)))
         n_times = int(filtered_raw.n_times)
-        if n_times <= budget:
+        slices = calibration_slices(
+            n_times,
+            sfreq,
+            max_seconds=self.max_calibration_seconds,
+            block_count=self.calibration_block_count,
+        )
+        if slices == [(0, n_times)]:
             return filtered_raw, n_times / sfreq
 
-        block_count = 10
-        block_samples = max(2, budget // block_count)
-        starts = np.linspace(0, n_times - block_samples, block_count, dtype=int)
         data = filtered_raw.get_data(picks="eeg")
-        blocks = np.stack([data[:, start : start + block_samples] for start in starts])
+        blocks = np.stack([data[:, start:end] for start, end in slices])
         epochs = mne.EpochsArray(
             blocks, filtered_raw.info.copy(), tmin=0.0, baseline=None, verbose=False
         )

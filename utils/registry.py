@@ -27,6 +27,8 @@ CLASSIFIER_MODULES = {
     "lightgbm": "classifier.lightgbm.model",
     "mlp": "classifier.mlp.model",
     "eegnet": "classifier.eegnet.model",
+    "vit": "classifier.vit.model",
+    "mobilenet": "classifier.mobilenet.model",
 }
 
 

@@ -1,6 +1,9 @@
-"""Linear GPU SVM using RAPIDS cuML for all downstream tasks."""
+"""GPU linear SVM using RAPIDS cuML LinearSVC."""
 
-from classifier.common import fit_cuml_classifier
+import numpy as np
+from cuml.svm import LinearSVC
+
+from utils.contracts import Prediction
 
 
 class SVMClassifier:
@@ -9,20 +12,25 @@ class SVMClassifier:
     requires_standardization = True
 
     def fit_predict(self, x_train, y_train, x_test, seed: int, **_):
-        try:
-            from cuml.svm import SVC as cuSVC
-        except ImportError as exc:
-            raise RuntimeError("cuML is required for SVM") from exc
-        model = cuSVC(
-            kernel="linear",
+        del seed
+
+        # Keep cuML LinearSVC defaults.
+        # probability=True is required because the pipeline uses predict_proba for AUC.
+        model = LinearSVC(
             probability=True,
+            output_type="numpy",
         )
-        return fit_cuml_classifier(
-            model,
-            x_train,
-            y_train,
-            x_test,
-            score_method="decision_function",
+
+        model.fit(
+            np.asarray(x_train, dtype=np.float32),
+            np.asarray(y_train),
+        )
+
+        x_test = np.asarray(x_test, dtype=np.float32)
+
+        return Prediction(
+            labels=np.asarray(model.predict(x_test)),
+            scores=np.asarray(model.predict_proba(x_test)),
         )
 
 
