@@ -21,7 +21,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Download the EEG datasets and run the benchmark. Running without "
-            "arguments executes all 1200 model runs."
+            "arguments executes all 1440 model runs."
         )
     )
     parser.add_argument(
@@ -37,7 +37,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--methods",
         nargs="+",
-        help="Subset: raw bandpass asr ic_unet ica",
+        help="Subset: raw bandpass asr asr20 ic_unet ica",
     )
     parser.add_argument(
         "--classifiers",

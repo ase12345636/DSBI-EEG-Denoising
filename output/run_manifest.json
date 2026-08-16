@@ -23,9 +23,19 @@
     "mobilenet"
   ],
   "repeats": 10,
-  "base_seed": 0,
-  "output_dir": "output",
-  "cache_dir": ".cache",
+  "master_seed": 1786427347,
+  "repeat_seeds": [
+    2013945970,
+    61155527,
+    1072713694,
+    2111243235,
+    1626406676,
+    126691620,
+    28155425,
+    149869551,
+    2044435244,
+    1786428360
+  ],
   "stft": {
     "feature_mode": "mean_power_over_time",
     "window": "hann",
@@ -43,12 +53,19 @@
   "asr": {
     "cutoff": 5
   },
-  "ic_unet": {},
+  "asr20": {
+    "cutoff": 20
+  },
   "calibration": {
     "max_seconds": 300.0,
     "block_count": 10
   },
   "ica": {
     "random_state": 97
+  },
+  "statistics": {
+    "primary": "two-sided paired Wilcoxon (denoised != raw)",
+    "supplementary": "one-sided paired Wilcoxon (denoised < raw)",
+    "correction": "Holm within each task and metric"
   }
 }

@@ -1,4 +1,4 @@
-"""Mental-attention downstream task, matching the report's 80/20 sample split."""
+"""Mental-attention downstream task with subject-level evaluation."""
 
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ class AttentionStateTask:
     name = "attention_state"
     feature_kind = "stft_mean_power"
     validation_size = 0.20
+    split_cycle_size = 5
 
     def prepare(self, data_dir: Path, cache_dir: Path, denoiser, checkpoint_path: Path | None,
                 quick: bool) -> SignalDataset:
@@ -58,7 +59,7 @@ class AttentionStateTask:
 
             elif denoiser.name == "raw":
                 processed = signal
-            elif denoiser.name == "asr":
+            elif denoiser.name in {"asr", "asr20"}:
                 processed = denoiser.transform_recording(signal, FS)
             elif denoiser.name == "bandpass":
                 processed = denoiser.transform(signal[None], FS)[0]
@@ -88,7 +89,7 @@ class AttentionStateTask:
                     if window.shape[-1] == WINDOW:
                         windows.append(window.astype(np.float32, copy=False))
                         labels.append(label)
-                        groups.append(path.stem)
+                        groups.append(self._subject(path.stem))
                         sample_ids.append(f"{path.stem}:{label}:{start}")
 
         data = SignalDataset(
@@ -108,10 +109,15 @@ class AttentionStateTask:
         return data
 
     @staticmethod
-    def split(data: SignalDataset, seed: int):
-        from sklearn.model_selection import train_test_split
+    def split(data: SignalDataset, seed: int, repeat: int = 0):
+        from sklearn.model_selection import StratifiedGroupKFold, train_test_split
         indices = np.arange(len(data.labels))
-        return train_test_split(indices, test_size=0.2, stratify=data.labels, random_state=seed)
+        if len(np.unique(data.groups)) == 1:  # quick smoke run
+            return train_test_split(
+                indices, test_size=0.2, stratify=data.labels, random_state=seed
+            )
+        folds = StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=seed)
+        return list(folds.split(indices, data.labels, data.groups))[repeat % 5]
 
     @staticmethod
     def features(train, test, y_train, y_test):
@@ -146,6 +152,11 @@ class AttentionStateTask:
             for label in range(3)
             for start in range(0, STATE_SAMPLES, WINDOW)
         ])
+
+    @staticmethod
+    def _subject(value: str) -> str:
+        record = int(Path(value.split(":", 1)[0]).stem.removeprefix("eeg_record"))
+        return f"subject_{(record - 1) // 7 + 1}"
 
     @staticmethod
     def _load_eeg(path: Path) -> np.ndarray:
@@ -190,14 +201,18 @@ class AttentionStateTask:
             sample_ids=data.sample_ids,
         )
 
-    @staticmethod
-    def _load(path: Path) -> SignalDataset:
+    @classmethod
+    def _load(cls, path: Path) -> SignalDataset:
         with np.load(path, allow_pickle=False) as saved:
+            sample_ids = saved["sample_ids"] if "sample_ids" in saved.files else None
             return SignalDataset(
                 saved["signals"], saved["labels"], FS,
                 ("focused", "unfocused", "drowsy"), "accuracy",
-                groups=saved["groups"],
-                sample_ids=saved["sample_ids"] if "sample_ids" in saved.files else None,
+                groups=(
+                    np.asarray([cls._subject(value) for value in sample_ids])
+                    if sample_ids is not None else saved["groups"]
+                ),
+                sample_ids=sample_ids,
             )
 
 

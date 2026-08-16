@@ -113,7 +113,7 @@ class ReproductionPipeline:
         print(f"Tasks: {', '.join(task_names)}")
         print(f"Denoising: {', '.join(method_names)}")
         print(f"Classifiers: {', '.join(classifier_names)}")
-        print("Mode: report reproduction + ICA")
+        print("Mode: report reproduction + ICA + ASR k=20")
 
         output_dir = (
             self.config.output_dir / "quick_smoke"
@@ -290,7 +290,7 @@ class ReproductionPipeline:
                     denoiser = load_denoiser(method_name)
                     if hasattr(denoiser, "configure"):
                         method_settings = dict(self.config.calibration)
-                        if method_name == "asr":
+                        if method_name in {"asr", "asr20"}:
                             method_settings.update(self.config.asr)
                         elif method_name == "ica":
                             method_settings.update(self.config.ica)
@@ -316,7 +316,7 @@ class ReproductionPipeline:
                     fixed_feature_pair = None
                     if task.feature_kind == "xdawn_tangent" and needs_features:
                         fixed_train_index, fixed_test_index = task.split(
-                            data, repeat_seeds[0]
+                            data, repeat_seeds[0], 0
                         )
                         fixed_feature_pair = task.features(
                             data.signals[fixed_train_index],
@@ -363,7 +363,9 @@ class ReproductionPipeline:
                             continue
 
                         _set_seed(seed)
-                        train_index, test_index = task.split(data, seed)
+                        cycle_size = getattr(task, "split_cycle_size", 1)
+                        split_seed = repeat_seeds[repeat - repeat % cycle_size]
+                        train_index, test_index = task.split(data, split_seed, repeat)
                         train_signal = data.signals[train_index]
                         test_signal = data.signals[test_index]
                         y_train = data.labels[train_index]
@@ -503,11 +505,12 @@ class ReproductionPipeline:
             "stft": self.config.stft,
             "eegnet": self.config.eegnet,
             "asr": self.config.asr,
+            "asr20": {**self.config.asr, "cutoff": 20},
             "calibration": self.config.calibration,
             "ica": self.config.ica,
             "statistics": {
-                "primary": "one-sided paired Wilcoxon (denoised < raw)",
-                "supplementary": "two-sided paired Wilcoxon",
+                "primary": "two-sided paired Wilcoxon (denoised != raw)",
+                "supplementary": "one-sided paired Wilcoxon (denoised < raw)",
                 "correction": "Holm within each task and metric",
             },
         }

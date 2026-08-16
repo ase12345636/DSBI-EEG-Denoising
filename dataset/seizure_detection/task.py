@@ -30,6 +30,7 @@ class SeizureDetectionTask:
     feature_kind = "stft_mean_power"
     validation_size = 0.20
     feature_power_scale = FEATURE_POWER_SCALE
+    split_cycle_size = 5
 
     def prepare(self, data_dir: Path, cache_dir: Path, denoiser, checkpoint_path: Path | None,
                 quick: bool) -> SignalDataset:
@@ -55,7 +56,7 @@ class SeizureDetectionTask:
         for relative, second, label in plan:
             selected_by_file[relative].append((second, label))
 
-        examples, labels, sample_ids = [], [], []
+        examples, labels, groups, sample_ids = [], [], [], []
         import mne
 
         selected_recordings = sorted(selected_by_file)
@@ -90,7 +91,7 @@ class SeizureDetectionTask:
                     task_name=self.name,
                     recording_id=relative,
                 )
-            elif denoiser.name == "asr":
+            elif denoiser.name in {"asr", "asr20"}:
                 recording = denoiser.transform_recording(recording, FS)
             elif denoiser.name == "bandpass":
                 recording = denoiser.transform(recording[None], FS)[0]
@@ -101,6 +102,7 @@ class SeizureDetectionTask:
                 segment = recording[:, second * int(FS) : (second + 1) * int(FS)]
                 examples.append(segment.astype(np.float32, copy=False))
                 labels.append(label)
+                groups.append(self._patient(relative))
                 sample_ids.append(f"{relative}#{second:06d}")
 
         signals = np.stack(examples)
@@ -123,6 +125,7 @@ class SeizureDetectionTask:
             FS,
             ("non_seizure", "seizure"),
             "accuracy",
+            groups=np.asarray(groups),
             sample_ids=sample_ids,
         )
         data.validate()
@@ -133,15 +136,15 @@ class SeizureDetectionTask:
         return data
 
     @staticmethod
-    def split(data: SignalDataset, seed: int):
-        from sklearn.model_selection import train_test_split
+    def split(data: SignalDataset, seed: int, repeat: int = 0):
+        from sklearn.model_selection import StratifiedGroupKFold, train_test_split
         indices = np.arange(len(data.labels))
-        return train_test_split(
-            indices,
-            test_size=0.2,
-            stratify=data.labels,
-            random_state=seed,
-        )
+        if len(np.unique(data.groups)) == 1:  # quick smoke run
+            return train_test_split(
+                indices, test_size=0.2, stratify=data.labels, random_state=seed
+            )
+        folds = StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=seed)
+        return list(folds.split(indices, data.labels, data.groups))[repeat % 5]
 
     @staticmethod
     def features(train, test, y_train, y_test):
@@ -202,6 +205,11 @@ class SeizureDetectionTask:
         value = re.sub(r"-\d+$", "", value)  # MNE duplicate-label suffix
         value = re.sub(r"-(REF|LE|RE)$", "", value)
         return "O1" if value == "01" else value
+
+    @staticmethod
+    def _patient(value: str) -> str:
+        patient = Path(value.split("#", 1)[0]).parts[0].lower()
+        return "chb01" if patient == "chb21" else patient
 
     @classmethod
     def _canonical_bipolar(
@@ -270,19 +278,22 @@ class SeizureDetectionTask:
             path,
             signals=data.signals,
             labels=data.labels,
+            groups=data.groups,
             sample_ids=data.sample_ids,
         )
 
-    @staticmethod
-    def _load(path: Path) -> SignalDataset:
+    @classmethod
+    def _load(cls, path: Path) -> SignalDataset:
         with np.load(path, allow_pickle=False) as saved:
+            sample_ids = saved["sample_ids"]
             return SignalDataset(
                 saved["signals"],
                 saved["labels"],
                 FS,
                 ("non_seizure", "seizure"),
                 "accuracy",
-                sample_ids=saved["sample_ids"],
+                groups=np.asarray([cls._patient(value) for value in sample_ids]),
+                sample_ids=sample_ids,
             )
 
 

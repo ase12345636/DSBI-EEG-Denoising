@@ -16,6 +16,7 @@ DENOISE_MODULES = {
     "raw": "denoise.raw.method",
     "bandpass": "denoise.bandpass.method",
     "asr": "denoise.asr.method",
+    "asr20": "denoise.asr20.method",
     "ic_unet": "denoise.ic_unet.method",
     "ica": "denoise.ica.method",
 }

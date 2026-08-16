@@ -19,13 +19,14 @@ TABLE_NUMBERS = {
     "seizure_detection": (7, 8),
     "attention_state": (9, 10),
 }
-METHOD_ORDER = ("raw", "bandpass", "ica", "asr", "ic_unet")
+METHOD_ORDER = ("raw", "bandpass", "ica", "asr", "asr20", "ic_unet")
 CLASSIFIER_ORDER = (
     "logistic_regression", "svm", "random_forest", "lightgbm", "mlp", "eegnet",
     "vit", "mobilenet",
 )
 DISPLAY_METHOD = {
-    "raw": "Raw", "bandpass": "Filter (1–50 Hz)", "asr": "ASR",
+    "raw": "Raw", "bandpass": "Filter (1–50 Hz)", "asr": "ASR (k=5)",
+    "asr20": "ASR (k=20)",
     "ic_unet": "IC-U-Net", "ica": "ICA"
 }
 DISPLAY_CLASSIFIER = {
@@ -35,7 +36,8 @@ DISPLAY_CLASSIFIER = {
 }
 METHOD_COLORS = {
     "Raw": "#ff9999", "Filter (1–50 Hz)": "#8fc5f4",
-    "ASR": "#91e693", "IC-U-Net": "#ffd29b",
+    "ASR (k=5)": "#91e693", "ASR (k=20)": "#4daf4a",
+    "IC-U-Net": "#ffd29b",
     "ICA": "#c7a6e8",
 }
 TASK_DISPLAY = {
@@ -59,10 +61,10 @@ def write_outputs(results: pd.DataFrame, output_dir: Path, manifest: dict) -> No
         recall_mean=("recall", "mean"),
     )
     summary.to_csv(output_dir / "summary.csv", index=False)
-    one_sided = _wilcoxon_vs_raw(results, alternative="less")
-    one_sided.to_csv(output_dir / "wilcoxon_one_sided_vs_raw.csv", index=False)
     two_sided = _wilcoxon_vs_raw(results, alternative="two-sided")
     two_sided.to_csv(output_dir / "wilcoxon_two_sided_vs_raw.csv", index=False)
+    one_sided = _wilcoxon_vs_raw(results, alternative="less")
+    one_sided.to_csv(output_dir / "wilcoxon_one_sided_vs_raw.csv", index=False)
     (output_dir / "mann_whitney_vs_raw.csv").unlink(missing_ok=True)
     for task_name in results["task"].unique():
         task_dir = output_dir / task_name
@@ -278,7 +280,7 @@ def _add_significance(axis, data: pd.DataFrame, metric: str,
     axis.set_ylim(lower, top + step)
     tests = {
         row["method"]: row for row in _paired_method_tests(
-            data, metric, alternative="less"
+            data, metric, alternative="two-sided"
         )
     }
     if not tests:

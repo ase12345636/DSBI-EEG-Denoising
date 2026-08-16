@@ -1,0 +1,25 @@
+task,method,metric,alternative,n_classifiers,w_statistic,mean_difference,p_value,holm_adjusted_p_value,significant_0_05
+attention_state,bandpass,primary,denoised != raw,8,6.0,-0.05475543478260867,0.109375,0.328125,False
+attention_state,ica,primary,denoised != raw,8,11.0,-0.00015096618357490765,0.3828125,0.5,False
+attention_state,asr,primary,denoised != raw,8,9.0,-0.0015851449275362528,0.25,0.5,False
+attention_state,ic_unet,primary,denoised != raw,8,1.0,-0.1144550120772947,0.015625,0.0625,False
+attention_state,bandpass,auc,denoised != raw,8,8.0,-0.042791802317440314,0.1953125,0.5859375,False
+attention_state,ica,auc,denoised != raw,8,12.0,-0.001755135721880921,0.4609375,0.5859375,False
+attention_state,asr,auc,denoised != raw,8,8.0,-0.0011636463857820495,0.1953125,0.5859375,False
+attention_state,ic_unet,auc,denoised != raw,8,2.0,-0.07710987890433556,0.0234375,0.09375,False
+bci_errp,bandpass,primary,denoised != raw,8,0.0,-0.029222206402321024,0.0078125,0.03125,True
+bci_errp,ica,primary,denoised != raw,8,0.0,-0.036667905232128276,0.0078125,0.03125,True
+bci_errp,asr,primary,denoised != raw,8,0.0,-0.03767595562804289,0.0078125,0.03125,True
+bci_errp,ic_unet,primary,denoised != raw,8,0.0,-0.07685962268906539,0.0078125,0.03125,True
+bci_errp,bandpass,auc,denoised != raw,8,3.0,-0.02911674049131903,0.0390625,0.046875,True
+bci_errp,ica,auc,denoised != raw,8,1.0,-0.05293958606890646,0.015625,0.046875,True
+bci_errp,asr,auc,denoised != raw,8,1.0,-0.04239972861996266,0.015625,0.046875,True
+bci_errp,ic_unet,auc,denoised != raw,8,0.0,-0.1075890005741296,0.0078125,0.03125,True
+seizure_detection,bandpass,primary,denoised != raw,8,13.0,-0.0013649738448125726,0.546875,0.546875,False
+seizure_detection,ica,primary,denoised != raw,8,1.0,-0.037391020052310375,0.015625,0.03125,True
+seizure_detection,asr,primary,denoised != raw,8,0.0,-0.058478639930252846,0.0078125,0.03125,True
+seizure_detection,ic_unet,primary,denoised != raw,8,0.0,-0.15853040540540542,0.0078125,0.03125,True
+seizure_detection,bandpass,auc,denoised != raw,8,16.0,0.001094902864376926,0.84375,0.84375,False
+seizure_detection,ica,auc,denoised != raw,8,1.0,-0.03353030920471051,0.015625,0.03125,True
+seizure_detection,asr,auc,denoised != raw,8,0.0,-0.05263467574712549,0.0078125,0.03125,True
+seizure_detection,ic_unet,auc,denoised != raw,8,0.0,-0.12731981443574802,0.0078125,0.03125,True

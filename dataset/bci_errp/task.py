@@ -43,7 +43,7 @@ class BCIErrPTask:
                 denoiser.save_reports(cache.with_suffix(".components.json"))
             return data
 
-        if denoiser.name == "asr":
+        if denoiser.name in {"asr", "asr20"}:
             data = self._asr_epochs(data_dir, denoiser, quick)
             if not quick:
                 self._save(cache, data)
@@ -88,8 +88,8 @@ class BCIErrPTask:
         return data
 
     @staticmethod
-    def split(data: SignalDataset, seed: int):
-        del seed
+    def split(data: SignalDataset, seed: int, repeat: int = 0):
+        del seed, repeat
         return np.flatnonzero(data.fixed_train), np.flatnonzero(~data.fixed_train)
 
     @staticmethod
