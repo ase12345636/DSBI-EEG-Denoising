@@ -99,11 +99,21 @@ python main.py --force-download --download-only
 
 `--skip-download` requires the expected dataset files to already exist under each task's `dataset/<task>/data/raw/` directory. Interrupted HTTP downloads are retained as `.part` files and resumed automatically.
 
+
+### Current protocol notes
+
+- All deep-learning classifiers use a 20% stratified validation split from the outer training data. The validation split is used for early stopping and checkpoint selection only.
+- Balanced Accuracy is the primary metric for BCI, seizure detection, and attention-state classification; AUC is reported as the secondary metric.
+- IC-U-Net input conditioning uses the model-domain sampling rate of 256 Hz and a 1-50 Hz FIR bandpass. Named scalp channels are mapped to the model's 30-channel template before inference, and missing template sites are imputed from nearby available scalp channels.
+- IC-U-Net continuous recordings are processed in non-overlapping four-second (1024-sample) blocks. Each block is normalized independently before inference, and reconstructed signals are returned to their native sampling rate before downstream epoching/windowing.
+- For BCI, IC-U-Net is applied to each continuous session before the 700-ms ErrP epochs are extracted, so the downstream epoch length remains 140 samples for every preprocessing condition.
+- For CHB-MIT, the bipolar montage is adapted through a least-squares scalp representation and only the IC-U-Net-induced correction is mapped back to the original bipolar derivations.
+
 ### Resume an interrupted run
 
 Run the same command again after an interruption. Completed model runs are loaded from `output/all_runs.partial.csv`, and the saved `output/repeat_seed_plan.json` ensures that the same repeat seeds are reused. Prepared signals, features, and model artifacts are cached under `.cache/` to reduce repeated work.
 
-If the code, configuration, source data, or IC-U-Net checkpoint changes, remove `.cache/` before starting a new benchmark to avoid reusing stale cached data.
+Prepared data are cached directly under `.cache/<task>/`. If preprocessing code or settings change, delete only the affected cache file before rerunning. For the current revision, delete `.cache/bci_errp/ic_unet.npz`, `.cache/attention_state/ic_unet.npz`, and `.cache/seizure_detection/ic_unet.npz` if they were created by the previous IC-U-Net implementation. Other cache files can be kept.
 
 ### Outputs
 

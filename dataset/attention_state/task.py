@@ -69,7 +69,10 @@ class AttentionStateTask:
                     signal,
                     FS,
                     checkpoint_path,
+                    channel_names=ATTENTION_CHANNELS,
                     task_name=self.name,
+                    chunk_seconds=4,
+                    overlap_seconds=0,
                 )
             else:
                 raise ValueError(f"Unsupported Attention denoiser: {denoiser.name}")

@@ -181,6 +181,7 @@ class BCIErrPTask:
                 eeg,
                 FS,
                 checkpoint_path,
+                channel_names=CHANNELS,
                 task_name=self.name,
                 chunk_seconds=4,
                 overlap_seconds=0,

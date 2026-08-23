@@ -1,11 +1,13 @@
-"""IC-U-Net inference adapters for the three downstream EEG tasks."""
+"""IC-U-Net inference adapters for the downstream EEG tasks."""
 
 from __future__ import annotations
 
 from fractions import Fraction
 from pathlib import Path
+from typing import Sequence
 
 import numpy as np
+from scipy.optimize import linear_sum_assignment
 from scipy.signal import firwin, lfilter, resample_poly
 
 from denoise.ic_unet.model import UNet1
@@ -18,6 +20,11 @@ class ICUNetDenoiser:
     lowcut = 1.0
     highcut = 50.0
     fir_numtaps = 1000
+    template_channels = (
+        "Fp1", "Fp2", "F7", "F3", "Fz", "F4", "F8", "FT7", "FC3", "FCz",
+        "FC4", "FT8", "T7", "C3", "Cz", "C4", "T8", "TP7", "CP3", "CPz",
+        "CP4", "TP8", "P7", "P3", "Pz", "P4", "P8", "O1", "Oz", "O2",
+    )
 
     def __init__(self) -> None:
         self._model = None
@@ -42,15 +49,113 @@ class ICUNetDenoiser:
         self._model, self._model_path, self._device = model, checkpoint_path, device
         return model, device
 
-    @staticmethod
-    def _pad_channels(signal: np.ndarray) -> tuple[np.ndarray, int]:
-        signal = np.asarray(signal, dtype=np.float64)
-        original = signal.shape[0]
-        if original < 30:
-            signal = np.vstack([signal] + [signal[-1:]] * (30 - original))
-        elif original > 30:
-            signal = signal[:30]
-        return signal, min(original, 30)
+    @classmethod
+    def _channel_coordinates(cls, names: Sequence[str]) -> np.ndarray:
+        """Return standard-10/20 coordinates for channel names."""
+        import mne
+
+        positions = mne.channels.make_standard_montage("standard_1020").get_positions()["ch_pos"]
+        lookup = {name.casefold(): np.asarray(value, dtype=np.float64) for name, value in positions.items()}
+        coordinates = []
+        missing = []
+        for name in names:
+            key = str(name).strip().casefold()
+            if key not in lookup:
+                missing.append(str(name))
+            else:
+                coordinates.append(lookup[key])
+        if missing:
+            raise ValueError(
+                "IC-U-Net channel mapping requires standard scalp locations; missing: "
+                + ", ".join(missing)
+            )
+        return np.stack(coordinates)
+
+    @classmethod
+    def _map_channels(
+        cls,
+        signal: np.ndarray,
+        channel_names: Sequence[str] | None,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Map input scalp channels to the 30-channel IC-U-Net template.
+
+        Exact template-name matches are used first. Remaining input channels are
+        assigned one-to-one to the nearest unfilled template locations. Any still
+        missing template channel is imputed by the mean of its four nearest input
+        scalp channels. The returned index map restores the reconstructed template
+        signal to the original input channel order after inference.
+        """
+        values = np.asarray(signal, dtype=np.float64)
+        if values.ndim != 2:
+            raise ValueError(f"IC-U-Net expects a 2-D channels x time array, got {values.shape}")
+
+        if channel_names is None:
+            if values.shape[0] != 30:
+                raise ValueError(
+                    "channel_names are required when IC-U-Net input does not already have 30 channels"
+                )
+            return values, np.arange(30, dtype=int)
+
+        names = tuple(str(name).strip() for name in channel_names)
+        if len(names) != values.shape[0]:
+            raise ValueError(
+                f"IC-U-Net received {values.shape[0]} channels but {len(names)} channel names"
+            )
+
+        template = cls.template_channels
+        template_lookup = {name.casefold(): index for index, name in enumerate(template)}
+        input_coordinates = cls._channel_coordinates(names)
+        template_coordinates = cls._channel_coordinates(template)
+
+        mapped = np.empty((30, values.shape[1]), dtype=np.float64)
+        assigned_template: dict[int, int] = {}
+        used_template = set()
+        unmatched_inputs = []
+
+        for input_index, name in enumerate(names):
+            template_index = template_lookup.get(name.casefold())
+            if template_index is not None and template_index not in used_template:
+                assigned_template[input_index] = template_index
+                used_template.add(template_index)
+            else:
+                unmatched_inputs.append(input_index)
+
+        remaining_templates = [index for index in range(30) if index not in used_template]
+        if unmatched_inputs:
+            if len(unmatched_inputs) > len(remaining_templates):
+                raise ValueError("More unmatched input channels than available IC-U-Net template channels")
+            cost = np.linalg.norm(
+                input_coordinates[np.asarray(unmatched_inputs)][:, None, :]
+                - template_coordinates[np.asarray(remaining_templates)][None, :, :],
+                axis=2,
+            )
+            row_indices, col_indices = linear_sum_assignment(cost)
+            for row_index, col_index in zip(row_indices, col_indices):
+                input_index = unmatched_inputs[int(row_index)]
+                template_index = remaining_templates[int(col_index)]
+                assigned_template[input_index] = template_index
+                used_template.add(template_index)
+
+        for input_index, template_index in assigned_template.items():
+            mapped[template_index] = values[input_index]
+
+        # The released CNElab channel-mapping interface supports mean-based
+        # imputation and uses nearby input channels for missing template sites.
+        # Use the four nearest available scalp channels for each missing site.
+        for template_index in range(30):
+            if template_index in used_template:
+                continue
+            distances = np.linalg.norm(
+                input_coordinates - template_coordinates[template_index],
+                axis=1,
+            )
+            nearest = np.argsort(distances)[: min(4, len(names))]
+            mapped[template_index] = values[nearest].mean(axis=0)
+
+        restore_indices = np.asarray(
+            [assigned_template[index] for index in range(len(names))], dtype=int
+        )
+        return mapped, restore_indices
 
     @classmethod
     def _fir(cls, signal: np.ndarray) -> np.ndarray:
@@ -95,56 +200,34 @@ class ICUNetDenoiser:
             tensor = torch.as_tensor(signal[np.newaxis], dtype=torch.float32, device=device)
             return model(tensor).detach().cpu().numpy()[0].astype(np.float64)
 
-    def _decode(self, model, device, signal: np.ndarray) -> np.ndarray:
+    def _decode_block(self, model, device, signal: np.ndarray) -> np.ndarray:
+        """Normalize one model block, infer it, and restore its amplitude scale."""
         normalized, std = self._normalise(signal)
         decoded = self._infer(model, device, normalized)
         if std > 0:
             decoded *= std
         return decoded
 
-    def _seizure_epoch(self, epoch: np.ndarray, checkpoint_path: Path) -> np.ndarray:
-        """Process a 1-second CHB-MIT epoch with the fixed 256-Hz model."""
-        model, device = self._load_model(checkpoint_path)
-        original_samples = epoch.shape[-1]
-        data, channels = self._pad_channels(epoch)
-        data = np.concatenate([data] * 8, axis=-1)
-        data = self._fir(data)
-
-        pieces = []
-        for start in range(0, (data.shape[-1] // 1024) * 1024, 1024):
-            pieces.append(self._decode(model, device, data[:, start : start + 1024]))
-        if not pieces:
-            raise ValueError("IC-U-Net seizure input did not produce a 1024-sample block")
-
-        decoded = pieces[0]
-        for piece in pieces[1:]:
-            piece = piece.copy()
-            smooth = (decoded[:, -1] + piece[:, 1]) / 2.0
-            decoded[:, -1] = smooth
-            piece[:, 1] = smooth
-            decoded = np.concatenate([decoded, piece], axis=-1)
-        return decoded[:channels, -original_samples:].astype(np.float32)
-
     def _generic_epoch(
         self,
         epoch: np.ndarray,
         sampling_rate: float,
         checkpoint_path: Path,
+        channel_names: Sequence[str] | None = None,
     ) -> np.ndarray:
         model, device = self._load_model(checkpoint_path)
         original_samples = epoch.shape[-1]
-        data, channels = self._pad_channels(epoch)
+        data, restore_indices = self._map_channels(epoch, channel_names)
         data = self._resample(data, sampling_rate, self.target_rate)
         data = self._fir(data)
 
-        # The network downsamples by 2 three times. Pad only the time axis so
-        # inference preserves the complete resampled epoch, then crop the pad.
         model_samples = data.shape[-1]
         padded_samples = int(np.ceil(model_samples / 8.0) * 8)
         if padded_samples != model_samples:
             data = np.pad(data, ((0, 0), (0, padded_samples - model_samples)), mode="edge")
 
-        decoded = self._decode(model, device, data)[:channels, :model_samples]
+        decoded = self._decode_block(model, device, data)[:, :model_samples]
+        decoded = decoded[restore_indices]
         decoded = self._resample(decoded, self.target_rate, sampling_rate)
         decoded = self._match_length(decoded, original_samples)
         return decoded.astype(np.float32)
@@ -155,6 +238,7 @@ class ICUNetDenoiser:
         sampling_rate: float,
         checkpoint_path: Path,
         task_name: str | None = None,
+        channel_names: Sequence[str] | None = None,
         **_,
     ) -> np.ndarray:
         output = []
@@ -165,11 +249,14 @@ class ICUNetDenoiser:
             unit="epoch",
             leave=False,
         ):
-            if task_name == "seizure_detection":
-                cleaned = self._seizure_epoch(epoch, checkpoint_path)
-            else:
-                cleaned = self._generic_epoch(epoch, sampling_rate, checkpoint_path)
-            output.append(cleaned)
+            output.append(
+                self._generic_epoch(
+                    epoch,
+                    sampling_rate,
+                    checkpoint_path,
+                    channel_names=channel_names,
+                )
+            )
         return np.stack(output)
 
     def transform_recording(
@@ -178,20 +265,18 @@ class ICUNetDenoiser:
         sampling_rate: float,
         checkpoint_path: Path,
         *,
+        channel_names: Sequence[str] | None = None,
         task_name: str | None = None,
-        chunk_seconds: int = 30,
-        overlap_seconds: int = 2,
+        chunk_seconds: int = 4,
+        overlap_seconds: int = 0,
     ) -> np.ndarray:
-        """Denoise a continuous recording and return it at its native rate."""
+        """Denoise a continuous scalp recording and return it at its native rate."""
         model, device = self._load_model(checkpoint_path)
         original_samples = signal.shape[-1]
-        data, channels = self._pad_channels(signal)
+        data, restore_indices = self._map_channels(signal, channel_names)
 
-        # The public IC-U-Net preprocessing operates in a 256-Hz, 1-50-Hz
-        # signal domain. Exact rational resampling is used for non-256-Hz data.
         data = self._resample(data, sampling_rate, self.target_rate)
         data = self._fir(data)
-        normalized, std = self._normalise(data)
 
         chunk = int(chunk_seconds * self.target_rate)
         chunk -= chunk % 8
@@ -199,13 +284,10 @@ class ICUNetDenoiser:
             raise ValueError("IC-U-Net chunk duration is too short")
         overlap = min(int(overlap_seconds * self.target_rate), chunk // 2)
         step = chunk - overlap
-        total = normalized.shape[-1]
+        total = data.shape[-1]
 
         if overlap == 0:
-            # The public IC-U-Net pipeline uses non-overlapping 4-s / 1024-point
-            # blocks. Pad only the final incomplete block and crop it afterward
-            # so no native samples are discarded.
-            decoded = np.zeros_like(normalized)
+            decoded = np.zeros_like(data)
             starts = list(range(0, total, chunk))
             for start in progress(
                 starts,
@@ -216,19 +298,25 @@ class ICUNetDenoiser:
             ):
                 stop = min(start + chunk, total)
                 length = stop - start
-                piece = normalized[:, start:stop]
+                piece = data[:, start:stop]
                 if length < chunk:
                     piece = np.pad(piece, ((0, 0), (0, chunk - length)), mode="edge")
-                estimate = self._infer(model, device, piece)[:, :length]
+                estimate = self._decode_block(model, device, piece)[:, :length]
+
+                # Match the released reconstruction step at block boundaries.
+                if start > 0 and length > 1:
+                    smooth = (decoded[:, start - 1] + estimate[:, 1]) / 2.0
+                    decoded[:, start - 1] = smooth
+                    estimate[:, 1] = smooth
                 decoded[:, start:stop] = estimate
         elif total <= chunk:
             padded_total = int(np.ceil(total / 8.0) * 8)
-            piece = normalized
+            piece = data
             if padded_total != total:
                 piece = np.pad(piece, ((0, 0), (0, padded_total - total)), mode="edge")
-            decoded = self._infer(model, device, piece)[:, :total]
+            decoded = self._decode_block(model, device, piece)[:, :total]
         else:
-            summed = np.zeros_like(normalized)
+            summed = np.zeros_like(data)
             weights = np.zeros(total, dtype=np.float64)
             starts = list(range(0, max(total - chunk + 1, 1), step))
             if not starts or starts[-1] + chunk < total:
@@ -240,8 +328,8 @@ class ICUNetDenoiser:
                 unit="chunk",
                 leave=False,
             ):
-                piece = normalized[:, start : start + chunk]
-                estimate = self._infer(model, device, piece)
+                piece = data[:, start : start + chunk]
+                estimate = self._decode_block(model, device, piece)
                 length = min(estimate.shape[-1], piece.shape[-1])
                 estimate = estimate[:, :length]
                 window = np.maximum(np.hanning(length), 0.05)
@@ -253,12 +341,63 @@ class ICUNetDenoiser:
                 weights[start : start + length] += window
             decoded = summed / np.maximum(weights, 1e-8)[None, :]
 
-        if std > 0:
-            decoded *= std
-        decoded = decoded[:channels]
+        decoded = decoded[restore_indices]
         decoded = self._resample(decoded, self.target_rate, sampling_rate)
         decoded = self._match_length(decoded, original_samples)
         return decoded.astype(np.float32)
+
+    @staticmethod
+    def _bipolar_pair(channel_name: str) -> tuple[str, str]:
+        parts = [part for part in str(channel_name).strip().replace(" ", "").split("-") if part]
+        if len(parts) != 2:
+            raise ValueError(f"Invalid bipolar channel name for IC-U-Net: {channel_name}")
+        return parts[0], parts[1]
+
+    def transform_bipolar_recording(
+        self,
+        signal: np.ndarray,
+        sampling_rate: float,
+        checkpoint_path: Path,
+        *,
+        channel_names: Sequence[str],
+        task_name: str | None = None,
+    ) -> np.ndarray:
+        """Apply IC-U-Net through a scalp representation of bipolar EEG.
+
+        A least-squares scalp representation is used only as an adapter. After
+        denoising, only the IC-U-Net-induced correction is mapped back to the
+        original bipolar derivations so the adapter itself does not replace the
+        measured bipolar signal by its projection.
+        """
+        values = np.asarray(signal, dtype=np.float64)
+        pairs = [self._bipolar_pair(name) for name in channel_names]
+        electrodes: list[str] = []
+        seen = set()
+        for first, second in pairs:
+            for electrode in (first, second):
+                key = electrode.casefold()
+                if key not in seen:
+                    seen.add(key)
+                    electrodes.append(electrode)
+
+        index = {name.casefold(): i for i, name in enumerate(electrodes)}
+        incidence = np.zeros((len(pairs), len(electrodes)), dtype=np.float64)
+        for row, (first, second) in enumerate(pairs):
+            incidence[row, index[first.casefold()]] = 1.0
+            incidence[row, index[second.casefold()]] = -1.0
+
+        scalp = np.linalg.pinv(incidence) @ values
+        cleaned_scalp = self.transform_recording(
+            scalp,
+            sampling_rate,
+            checkpoint_path,
+            channel_names=electrodes,
+            task_name=task_name,
+            chunk_seconds=4,
+            overlap_seconds=0,
+        )
+        correction = incidence @ (cleaned_scalp - scalp)
+        return (values + correction).astype(np.float32)
 
 
 DENOISER = ICUNetDenoiser()

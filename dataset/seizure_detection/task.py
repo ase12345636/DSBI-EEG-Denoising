@@ -94,7 +94,17 @@ class SeizureDetectionTask:
                 recording = denoiser.transform_recording(recording, FS)
             elif denoiser.name == "bandpass":
                 recording = denoiser.transform(recording[None], FS)[0]
-            elif denoiser.name not in {"raw", "ic_unet"}:
+            elif denoiser.name == "ic_unet":
+                if checkpoint_path is None:
+                    raise ValueError("IC-U-Net checkpoint path is required")
+                recording = denoiser.transform_bipolar_recording(
+                    recording,
+                    FS,
+                    checkpoint_path,
+                    channel_names=CANONICAL_BIPOLAR_CHANNELS,
+                    task_name=self.name,
+                )
+            elif denoiser.name != "raw":
                 raise ValueError(f"Unsupported Seizure denoiser: {denoiser.name}")
 
             for second, label in selected_by_file[relative]:
@@ -107,16 +117,6 @@ class SeizureDetectionTask:
         signals = np.stack(examples)
         labels = np.asarray(labels, dtype=np.int8)
         sample_ids = np.asarray(sample_ids)
-
-        if denoiser.name == "ic_unet":
-            if checkpoint_path is None:
-                raise ValueError("IC-U-Net checkpoint path is required")
-            signals = denoiser.transform(
-                signals,
-                FS,
-                checkpoint_path=checkpoint_path,
-                task_name=self.name,
-            )
 
         data = SignalDataset(
             signals,

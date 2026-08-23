@@ -259,6 +259,11 @@ def _write_figures(results: pd.DataFrame, task_dir: Path, task_name: str) -> Non
         sns.boxplot(data=classifier_means, x="method_display", y=metric,
                     order=method_order, hue="method_display", hue_order=method_order,
                     palette=palette, legend=False, ax=axis)
+        # Each box summarizes eight classifier-level observations. Overlay the
+        # individual classifier means so the statistical unit is visible.
+        sns.stripplot(data=classifier_means, x="method_display", y=metric,
+                      order=method_order, jitter=0.08, size=5, alpha=0.8,
+                      zorder=3, ax=axis)
         metric_label = _metric_label(metric, results)
         axis.set_title(f"{metric_label} of Different Denoising Methods - {task_title}")
         axis.set_xlabel("")
