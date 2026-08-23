@@ -67,5 +67,18 @@
     "primary": "two-sided paired Wilcoxon (denoised != raw)",
     "supplementary": "one-sided paired Wilcoxon (denoised < raw)",
     "correction": "Holm within each task and metric"
+  },
+  "validation": {
+    "fraction": 0.2
+  },
+  "migration": {
+    "source": "previous all_runs.csv",
+    "carried_forward_runs": 1210,
+    "pending_rerun_runs": 230,
+    "pending_rules": [
+      "all bci_errp/ic_unet runs (IC-U-Net input-conditioning protocol changed)",
+      "all bci_errp runs for eegnet, vit, and mobilenet (validation fraction changed from 0.25 to 0.20)"
+    ],
+    "primary_metric_update": "primary_name and primary were remapped to existing balanced_accuracy values for carried-forward runs; no retraining was needed for this metric-only change."
   }
 }

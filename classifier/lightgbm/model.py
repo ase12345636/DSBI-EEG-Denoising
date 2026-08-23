@@ -14,7 +14,7 @@ class LightGBMModel:
         except ImportError as exc:
             raise RuntimeError("LightGBM is missing; install requirements.txt") from exc
 
-        # The author's BCI notebook constructs LGBMClassifier() with defaults.
+        # Use the library defaults for the BCI feature-based baseline.
         model = (
             LGBMClassifier()
             if task_name == "bci_errp"

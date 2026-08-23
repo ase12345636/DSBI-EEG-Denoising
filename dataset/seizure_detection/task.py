@@ -28,7 +28,6 @@ class SeizureDetectionTask:
     name = "seizure_detection"
     selection_seed = 0
     feature_kind = "stft_mean_power"
-    validation_size = 0.20
     feature_power_scale = FEATURE_POWER_SCALE
     split_cycle_size = 5
 
@@ -124,7 +123,7 @@ class SeizureDetectionTask:
             labels,
             FS,
             ("non_seizure", "seizure"),
-            "accuracy",
+            "balanced_accuracy",
             groups=np.asarray(groups),
             sample_ids=sample_ids,
         )
@@ -291,7 +290,7 @@ class SeizureDetectionTask:
                 saved["labels"],
                 FS,
                 ("non_seizure", "seizure"),
-                "accuracy",
+                "balanced_accuracy",
                 groups=np.asarray([cls._patient(value) for value in sample_ids]),
                 sample_ids=sample_ids,
             )

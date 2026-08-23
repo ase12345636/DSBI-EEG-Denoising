@@ -2,7 +2,7 @@
 
 The two Kaggle sources require a Kaggle account.  Put ``kaggle.json`` in the
 standard location or set KAGGLE_USERNAME/KAGGLE_KEY before running main.py.
-CHB-MIT and the IC-U-Net checkpoint are downloaded anonymously and resumably.
+CHB-MIT is downloaded anonymously and resumably. The IC-U-Net checkpoint is bundled with the project and checksum-verified before use.
 """
 
 from __future__ import annotations
@@ -27,10 +27,6 @@ from utils.progress import progress
 
 
 PHYSIONET_BASE = "https://physionet.org/files/chbmit/1.0.0"
-ICUNET_CHECKPOINT_URL = (
-    "https://raw.githubusercontent.com/SunGj921028/BCI-task/main/"
-    "model/ICUNet/modelsave/BEST_checkpoint.pth.tar"
-)
 ICUNET_CHECKPOINT_SHA256 = (
     "ab1034e921651f93a7b2617b6d28f77bf299a8f34a71b3841b36e84e3699a47c"
 )
@@ -148,7 +144,7 @@ def _resolve_attention_release(destination: Path) -> Path:
     selected_parent, selected_files = complete[0]
 
     # If multiple complete copies exist, verify that they are identical before
-    # deterministically selecting one.  This protects the reproduction from
+    # deterministically selecting one.  This protects the benchmark from
     # silently choosing conflicting data while still leaving the files intact.
     for other_parent, other_files in complete[1:]:
         for number in range(1, 35):
@@ -227,23 +223,20 @@ def ensure_dataset(root: Path, task_name: str, force: bool = False) -> Path:
 
 
 def ensure_icunet_checkpoint(root: Path, force: bool = False) -> Path:
-    """Return the required IC-U-Net checkpoint path."""
+    """Return the bundled IC-U-Net checkpoint after checksum verification."""
+    del force
     destination = (
         root / "denoise" / "ic_unet" / "weights" / "BEST_checkpoint.pth.tar"
     )
-    if destination.exists() and not force:
-        if _sha256(destination) == ICUNET_CHECKPOINT_SHA256:
-            return destination
-        print("[download] Existing IC-U-Net checkpoint checksum differs; replacing it")
-
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    print(f"[download] IC-U-Net BEST checkpoint -> {destination}")
-    _download_url(ICUNET_CHECKPOINT_URL, destination, skip_existing=False)
+    if not destination.exists():
+        raise DownloadError(
+            "The bundled IC-U-Net checkpoint is missing: "
+            f"{destination}. Restore BEST_checkpoint.pth.tar before running IC-U-Net."
+        )
     if destination.stat().st_size < 1_000_000:
-        raise DownloadError("The downloaded IC-U-Net checkpoint is unexpectedly small")
+        raise DownloadError("The bundled IC-U-Net checkpoint is unexpectedly small")
     digest = _sha256(destination)
     if digest != ICUNET_CHECKPOINT_SHA256:
-        destination.unlink(missing_ok=True)
         raise DownloadError(
             "IC-U-Net checkpoint checksum mismatch: "
             f"expected {ICUNET_CHECKPOINT_SHA256}, got {digest}"
@@ -375,7 +368,7 @@ def _download_url(
     last_error: BaseException | None = None
 
     for attempt in range(1, retries + 1):
-        headers: dict[str, str] = {"User-Agent": "eeg-report-reproduction/1.0"}
+        headers: dict[str, str] = {"User-Agent": "eeg-denoising-benchmark/2.0"}
         existing = partial.stat().st_size if partial.exists() else 0
         if existing:
             headers["Range"] = f"bytes={existing}-"

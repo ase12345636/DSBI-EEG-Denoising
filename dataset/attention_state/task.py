@@ -24,7 +24,6 @@ STATE_SAMPLES = 10 * 60 * 128
 class AttentionStateTask:
     name = "attention_state"
     feature_kind = "stft_mean_power"
-    validation_size = 0.20
     split_cycle_size = 5
 
     def prepare(self, data_dir: Path, cache_dir: Path, denoiser, checkpoint_path: Path | None,
@@ -75,9 +74,8 @@ class AttentionStateTask:
             else:
                 raise ValueError(f"Unsupported Attention denoiser: {denoiser.name}")
 
-            # The report's Z-score is common downstream preprocessing. Apply it
-            # after every denoiser so all methods receive physical EEG units and
-            # every classifier receives identically standardized recordings.
+            # Apply the same recording-level Z-score after every preprocessing
+            # condition so downstream classifiers receive consistently scaled data.
             mean = processed.mean(axis=1, keepdims=True)
             std = processed.std(axis=1, keepdims=True)
             processed = (processed - mean) / np.where(std == 0, 1.0, std)
@@ -97,7 +95,7 @@ class AttentionStateTask:
             np.asarray(labels, dtype=np.int8),
             FS,
             ("focused", "unfocused", "drowsy"),
-            "accuracy",
+            "balanced_accuracy",
             groups=np.asarray(groups),
             sample_ids=np.asarray(sample_ids),
         )
@@ -207,7 +205,7 @@ class AttentionStateTask:
             sample_ids = saved["sample_ids"] if "sample_ids" in saved.files else None
             return SignalDataset(
                 saved["signals"], saved["labels"], FS,
-                ("focused", "unfocused", "drowsy"), "accuracy",
+                ("focused", "unfocused", "drowsy"), "balanced_accuracy",
                 groups=(
                     np.asarray([cls._subject(value) for value in sample_ids])
                     if sample_ids is not None else saved["groups"]

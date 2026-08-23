@@ -1,6 +1,6 @@
 # A Comparative Study of EEG Denoising Methods: Assessing Their Impact on Downstream Task Performance
 
-This study evaluates how six EEG preprocessing conditions (Raw, bandpass filtering, ICA, ASR with k=5 and k=20, and IC-U-Net) affect downstream classification performance across BCI, seizure detection, and attention state tasks. Using eight traditional and deep learning classifiers under consistent experimental settings, the results show that denoising does not consistently improve performance and may sometimes reduce it. Overall, its impact depends on the task, evaluation metric, and classifier, highlighting the importance of assessing preprocessing methods in the context of their intended downstream application.
+This study evaluates how six EEG preprocessing conditions (Raw, bandpass filtering, ICA, ASR with k=5 and k=20, and IC-U-Net) affect downstream classification performance across BCI, seizure detection, and attention state tasks. Using eight traditional and deep learning classifiers under consistent experimental settings, the benchmark evaluates each preprocessing condition with Balanced Accuracy as the primary metric and AUC as the secondary metric. The goal is to assess preprocessing methods in the context of their intended downstream application.
 ![Overview](<figure/Figure 1.png>)
 
 ## Installation

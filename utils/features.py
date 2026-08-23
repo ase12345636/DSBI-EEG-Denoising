@@ -57,7 +57,7 @@ def bci_xdawn_tangent(
     test: np.ndarray,
     y_train: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Match ML-classifier.ipynb: XdawnCovariances(nfilter=5) then TangentSpace."""
+    """Apply xDAWN covariance features with five spatial filters, then tangent-space mapping."""
     from pyriemann.estimation import XdawnCovariances
     from pyriemann.tangentspace import TangentSpace
 

@@ -113,7 +113,7 @@ class ReproductionPipeline:
         print(f"Tasks: {', '.join(task_names)}")
         print(f"Denoising: {', '.join(method_names)}")
         print(f"Classifiers: {', '.join(classifier_names)}")
-        print("Mode: report reproduction + ICA + ASR k=20")
+        print("Mode: EEG denoising benchmark")
 
         output_dir = (
             self.config.output_dir / "quick_smoke"
@@ -446,7 +446,7 @@ class ReproductionPipeline:
                                     ),
                                     config=self.config.eegnet,
                                     quick=quick,
-                                    validation_size=task.validation_size,
+                                    validation_size=float(self.config.validation.get("fraction", 0.20)),
                                     task_name=task_name,
                                 )
                                 prediction_labels = self._copy_to_cpu(prediction.labels)
@@ -504,6 +504,7 @@ class ReproductionPipeline:
             "repeat_seeds": repeat_seeds,
             "stft": self.config.stft,
             "eegnet": self.config.eegnet,
+            "validation": self.config.validation,
             "asr": self.config.asr,
             "asr20": {**self.config.asr, "cutoff": 20},
             "calibration": self.config.calibration,

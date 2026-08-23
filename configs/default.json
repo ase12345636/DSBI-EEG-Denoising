@@ -26,6 +26,9 @@
   "base_seed": 0,
   "output_dir": "output",
   "cache_dir": ".cache",
+  "validation": {
+    "fraction": 0.2
+  },
   "stft": {
     "feature_mode": "mean_power_over_time",
     "window": "hann",

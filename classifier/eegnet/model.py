@@ -139,9 +139,8 @@ class EEGNetModel:
         checkpoint = cache_dir / f"eegnet-{seed}.weights.h5"
         epochs = 2 if quick else int(config.get("epochs", 150))
         patience = 2 if quick else int(config.get("patience", 10))
-        # Match DL-classifer.ipynb: checkpoint by val_loss, but early stop by
-        # val_accuracy.  The notebook creates ReduceLROnPlateau but does not
-        # actually pass it to model.fit(), so it is intentionally absent here.
+        # Select the saved checkpoint by validation loss while early stopping
+        # monitors validation accuracy. ReduceLROnPlateau is not used.
         callbacks = [
             ModelCheckpoint(
                 checkpoint,

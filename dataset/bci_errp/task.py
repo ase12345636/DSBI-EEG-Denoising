@@ -1,4 +1,4 @@
-"""BCI ErrP task reproduced from the author's BCI-task source."""
+"""BCI ErrP downstream task using the fixed competition subject split."""
 
 from __future__ import annotations
 
@@ -24,7 +24,6 @@ FS = 200.0
 class BCIErrPTask:
     name = "bci_errp"
     feature_kind = "xdawn_tangent"
-    validation_size = 0.25
 
     def prepare(self, data_dir: Path, cache_dir: Path, denoiser, checkpoint_path: Path | None,
                 quick: bool) -> SignalDataset:
@@ -49,29 +48,24 @@ class BCIErrPTask:
                 self._save(cache, data)
             return data
 
+        if denoiser.name == "ic_unet":
+            if checkpoint_path is None:
+                raise ValueError("IC-U-Net checkpoint path is required")
+            data = self._ic_unet_epochs(data_dir, denoiser, checkpoint_path, quick)
+            if not quick:
+                self._save(cache, data)
+            return data
+
         raw = self._raw_epochs(data_dir, quick)
         unbaselined = raw.signals
 
-        # This ordering follows preprocessing_data.ipynb, not the alternate
-        # preprocessing_data_copy.ipynb: epoch first, then method, then baseline.
         if denoiser.name == "bandpass":
             signals = denoiser.transform(unbaselined, FS, task_name=self.name)
             signals = self._baseline(signals)
+        elif denoiser.name == "raw":
+            signals = self._baseline(unbaselined)
         else:
-            baseline_corrected = self._baseline(unbaselined)
-            if denoiser.name == "raw":
-                signals = baseline_corrected
-            elif denoiser.name == "ic_unet":
-                if checkpoint_path is None:
-                    raise ValueError("IC-U-Net checkpoint path is required")
-                signals = denoiser.transform(
-                    baseline_corrected,
-                    FS,
-                    checkpoint_path=checkpoint_path,
-                    task_name=self.name,
-                )
-            else:
-                raise ValueError(f"Unsupported BCI denoiser: {denoiser.name}")
+            raise ValueError(f"Unsupported BCI denoiser: {denoiser.name}")
 
         data = SignalDataset(
             signals=np.asarray(signals, dtype=np.float32),
@@ -99,8 +93,7 @@ class BCIErrPTask:
 
     @staticmethod
     def standardize_features(x_train, x_test):
-        # The author's BCI ML notebook feeds tangent-space features directly
-        # to the classifiers.
+        # Tangent-space features are passed directly to the BCI classifiers.
         return np.asarray(x_train), np.asarray(x_test)
 
     @staticmethod
@@ -148,6 +141,66 @@ class BCIErrPTask:
 
         return SignalDataset(
             np.stack(epochs),
+            np.asarray(labels, dtype=np.int8),
+            FS,
+            ("bad_feedback", "good_feedback"),
+            "balanced_accuracy",
+            fixed_train=np.asarray(train_mask, dtype=bool),
+            sample_ids=np.asarray(sample_ids),
+        )
+
+
+    def _ic_unet_epochs(
+        self,
+        data_dir: Path,
+        denoiser,
+        checkpoint_path: Path,
+        quick: bool,
+    ) -> SignalDataset:
+        """Denoise each continuous session before extracting ErrP epochs."""
+        files = sorted(data_dir.rglob("Data_S*_Sess*.csv"))
+        if not files:
+            raise FileNotFoundError(f"No BCI session CSV files found below {data_dir}")
+        if quick:
+            train_file = next(p for p in files if self._subject(p) not in TEST_SUBJECTS)
+            test_file = next(p for p in files if self._subject(p) in TEST_SUBJECTS)
+            files = [train_file, test_file]
+
+        train_labels = self._label_map(data_dir, "TrainLabels.csv")
+        test_labels = self._test_label_map(data_dir)
+        epochs, labels, train_mask, sample_ids = [], [], [], []
+
+        for path in progress(files, total=len(files), desc="BCI IC-U-Net", unit="file", leave=False):
+            subject = self._subject(path)
+            is_train = subject not in TEST_SUBJECTS
+            frame = pd.read_csv(path, usecols=[*CHANNELS, "FeedBackEvent"])
+            markers = np.flatnonzero(frame["FeedBackEvent"].to_numpy() == 1)
+            eeg = frame.loc[:, CHANNELS].to_numpy(dtype=np.float64).T
+
+            cleaned = denoiser.transform_recording(
+                eeg,
+                FS,
+                checkpoint_path,
+                task_name=self.name,
+                chunk_seconds=4,
+                overlap_seconds=0,
+            )
+
+            label_map = train_labels if is_train else test_labels
+            prefix = path.stem.removeprefix("Data_")
+            for event_number, marker in enumerate(markers, start=1):
+                epoch = cleaned[:, marker - 20 : marker + 120]
+                if epoch.shape[-1] != 140:
+                    continue
+                epoch = epoch - np.mean(epoch[:, :20], axis=1, keepdims=True)
+                event_id = f"{prefix}_FB{event_number:03d}"
+                epochs.append(epoch)
+                labels.append(label_map[event_id])
+                train_mask.append(is_train)
+                sample_ids.append(event_id)
+
+        return SignalDataset(
+            np.stack(epochs).astype(np.float32),
             np.asarray(labels, dtype=np.int8),
             FS,
             ("bad_feedback", "good_feedback"),

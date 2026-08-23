@@ -1,4 +1,4 @@
-"""Automatic ICA denoising added to the report reproduction.
+"""Automatic ICA denoising for the benchmark.
 
 ICA is fitted on continuous EEG because a 0.7-s/1-s epoch is not a meaningful
 ICA calibration unit. The fit uses the same explicit label-free calibration

@@ -1,4 +1,4 @@
-"""Butterworth filter extracted from BCI total.ipynb (order=5, SOS, filtfilt)."""
+"""Fifth-order zero-phase Butterworth bandpass filtering."""
 
 from __future__ import annotations
 
