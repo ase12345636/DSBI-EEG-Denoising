@@ -260,10 +260,33 @@ def _write_figures(results: pd.DataFrame, task_dir: Path, task_name: str) -> Non
                     order=method_order, hue="method_display", hue_order=method_order,
                     palette=palette, legend=False, ax=axis)
         # Each box summarizes eight classifier-level observations. Overlay the
-        # individual classifier means so the statistical unit is visible.
-        sns.stripplot(data=classifier_means, x="method_display", y=metric,
-                      order=method_order, jitter=0.08, size=5, alpha=0.8,
-                      zorder=3, ax=axis)
+        # individual classifier means so the statistical unit is visible. Match
+        # each point to its corresponding box color, with a lighter fill and a
+        # slightly darker outline for readability.
+        from matplotlib.colors import to_rgb
+        for method_display in method_order:
+            method_points = classifier_means[
+                classifier_means["method_display"] == method_display
+            ]
+            if method_points.empty:
+                continue
+            point_color = palette[method_display]
+            rgb = to_rgb(point_color)
+            edge_color = tuple(max(0.0, channel * 0.72) for channel in rgb)
+            sns.stripplot(
+                data=method_points,
+                x="method_display",
+                y=metric,
+                order=method_order,
+                jitter=0.08,
+                size=5.5,
+                color=point_color,
+                alpha=0.50,
+                edgecolor=edge_color,
+                linewidth=0.8,
+                zorder=3,
+                ax=axis,
+            )
         metric_label = _metric_label(metric, results)
         axis.set_title(f"{metric_label} of Different Denoising Methods - {task_title}")
         axis.set_xlabel("")
